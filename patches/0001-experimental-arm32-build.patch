@@ -70,10 +70,26 @@ index cdea26b..03b4019 100644
        "//chrome/installer/mini_installer",
        "//components:components_perftests",
 diff --git a/base/BUILD.gn b/base/BUILD.gn
-index 76fb572..9b0ca50 100644
+index 76fb572..349a87c 100644
 --- a/base/BUILD.gn
 +++ b/base/BUILD.gn
-@@ -4331,7 +4331,7 @@ test("base_unittests") {
+@@ -2084,6 +2084,15 @@ component("base") {
+       "win/wrl_module.h",
+     ]
+ 
++    if (target_os == "winuwp") {
++      # Phone apps lack these desktop power, COM spy, and CFG test APIs.
++      sources -= [
++        "debug/invalid_access_win.cc",
++        "power_monitor/speed_limit_observer_win.cc",
++        "win/com_init_balancer.cc",
++      ]
++    }
++
+     deps += [ "//base/win:base_win_buildflags" ]
+ 
+     if (com_init_check_hook_disabled) {
+@@ -4331,7 +4340,7 @@ test("base_unittests") {
      "//testing/buildbot/filters:base_unittests_filters",
    ]
  
@@ -224,6 +240,137 @@ index 2156822..671ae3d 100644
  namespace time_internal {
  
  bool HasConstantRateTSC() {
+diff --git a/base/base_paths_win.cc b/base/base_paths_win.cc
+index 741638e..4d52bd0 100644
+--- a/base/base_paths_win.cc
++++ b/base/base_paths_win.cc
+@@ -6,23 +6,119 @@
+ 
+ #include <windows.h>
+ 
++#if defined(WINUWP)
++#include <roapi.h>
++#include <windows.storage.h>
++#include <winstring.h>
++#include <wrl/client.h>
++#else
+ #include <KnownFolders.h>
+ #include <shlobj.h>
++#endif
+ 
++#if !defined(WINUWP)
+ #include "base/environment.h"
++#endif
+ #include "base/files/file_path.h"
++#if !defined(WINUWP)
+ #include "base/files/file_util.h"
+ #include "base/path_service.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#endif
+ #include "base/win/current_module.h"
++#if !defined(WINUWP)
+ #include "base/win/scoped_co_mem.h"
+ #include "base/win/windows_version.h"
++#endif
+ 
+ using base::FilePath;
+ 
+ namespace base {
+ 
++#if defined(WINUWP)
++bool PathProviderWin(int key, FilePath* result) {
++  if (key == FILE_EXE || key == FILE_MODULE) {
++    wchar_t buffer[MAX_PATH];
++    HMODULE module = key == FILE_MODULE ? CURRENT_MODULE() : nullptr;
++    DWORD length = GetModuleFileNameW(module, buffer, MAX_PATH);
++    if (length == 0 || length >= MAX_PATH) {
++      return false;
++    }
++    *result = FilePath(std::wstring(buffer, length));
++    return true;
++  }
++
++  if (key != DIR_LOCAL_APP_DATA && key != DIR_ROAMING_APP_DATA &&
++      key != DIR_SYSTEM_TEMP) {
++    return false;
++  }
++
++  HRESULT init_result = RoInitialize(RO_INIT_MULTITHREADED);
++  if (FAILED(init_result) && init_result != RPC_E_CHANGED_MODE) {
++    return false;
++  }
++
++  bool found = [&] {
++    HSTRING class_name = nullptr;
++    HRESULT hr = WindowsCreateString(
++        RuntimeClass_Windows_Storage_ApplicationData,
++        static_cast<UINT32>(wcslen(RuntimeClass_Windows_Storage_ApplicationData)),
++        &class_name);
++    if (FAILED(hr)) {
++      return false;
++    }
++
++    Microsoft::WRL::ComPtr<ABI::Windows::Storage::IApplicationDataStatics>
++        statics;
++    hr = RoGetActivationFactory(
++        class_name,
++        __uuidof(ABI::Windows::Storage::IApplicationDataStatics),
++        reinterpret_cast<void**>(statics.GetAddressOf()));
++    WindowsDeleteString(class_name);
++    if (FAILED(hr)) {
++      return false;
++    }
++
++    Microsoft::WRL::ComPtr<ABI::Windows::Storage::IApplicationData> data;
++    if (FAILED(statics->get_Current(data.GetAddressOf()))) {
++      return false;
++    }
++
++    Microsoft::WRL::ComPtr<ABI::Windows::Storage::IStorageFolder> folder;
++    if (key == DIR_ROAMING_APP_DATA) {
++      hr = data->get_RoamingFolder(folder.GetAddressOf());
++    } else if (key == DIR_SYSTEM_TEMP) {
++      hr = data->get_TemporaryFolder(folder.GetAddressOf());
++    } else {
++      hr = data->get_LocalFolder(folder.GetAddressOf());
++    }
++    if (FAILED(hr)) {
++      return false;
++    }
++
++    Microsoft::WRL::ComPtr<ABI::Windows::Storage::IStorageItem> item;
++    if (FAILED(folder.As(&item))) {
++      return false;
++    }
++    HSTRING path = nullptr;
++    hr = item->get_Path(&path);
++    if (FAILED(hr)) {
++      return false;
++    }
++    UINT32 length = 0;
++    const wchar_t* raw = WindowsGetStringRawBuffer(path, &length);
++    *result = FilePath(std::wstring(raw, length));
++    WindowsDeleteString(path);
++    return true;
++  }();
++
++  if (SUCCEEDED(init_result)) {
++    RoUninitialize();
++  }
++  return found;
++}
++#else
+ bool PathProviderWin(int key, FilePath* result) {
+   // We need to go compute the value. It would be nice to support paths with
+   // names longer than MAX_PATH, but the system functions don't seem to be
+@@ -257,5 +353,6 @@ bool PathProviderWin(int key, FilePath* result) {
+   *result = cur;
+   return true;
+ }
++#endif  // defined(WINUWP)
+ 
+ }  // namespace base
 diff --git a/base/command_line.cc b/base/command_line.cc
 index d43d812..b6ae124 100644
 --- a/base/command_line.cc
@@ -290,6 +437,207 @@ index d43d812..b6ae124 100644
  }
  
  #endif  // BUILDFLAG(IS_WIN)
+diff --git a/base/debug/gdi_debug_util_win.cc b/base/debug/gdi_debug_util_win.cc
+index 047717e..eec4b7f 100644
+--- a/base/debug/gdi_debug_util_win.cc
++++ b/base/debug/gdi_debug_util_win.cc
+@@ -3,6 +3,24 @@
+ // found in the LICENSE file.
+ #include "base/debug/gdi_debug_util_win.h"
+ 
++#if defined(WINUWP)
++
++#include "base/check.h"
++
++namespace base::debug {
++
++void CollectGDIUsageAndDie(BITMAPINFOHEADER*, HANDLE) {
++  CHECK(false) << "GDI is unavailable to Windows Phone apps";
++}
++
++GdiHandleCounts GetGDIHandleCountsInCurrentProcessForTesting() {
++  return {};
++}
++
++}  // namespace base::debug
++
++#else
++
+ #include <windows.h>
+ #include <winternl.h>
+ 
+@@ -518,3 +536,5 @@ GdiHandleCounts GetGDIHandleCountsInCurrentProcessForTesting() {
+ 
+ }  // namespace debug
+ }  // namespace base
++
++#endif  // defined(WINUWP)
+diff --git a/base/debug/handle_hooks_win.cc b/base/debug/handle_hooks_win.cc
+index edc64b6..c8e3fda 100644
+--- a/base/debug/handle_hooks_win.cc
++++ b/base/debug/handle_hooks_win.cc
+@@ -4,6 +4,19 @@
+ 
+ #include "base/debug/handle_hooks_win.h"
+ 
++#if defined(WINUWP)
++
++namespace base::debug {
++
++// App-container modules cannot be patched with VirtualProtect.
++void HandleHooks::AddIATPatch(HMODULE) {}
++void HandleHooks::AddEATPatch() {}
++void HandleHooks::PatchLoadedModules() {}
++
++}  // namespace base::debug
++
++#else
++
+ #include <windows.h>
+ 
+ #include <psapi.h>
+@@ -265,3 +278,5 @@ void HandleHooks::PatchLoadedModules() {
+ }
+ 
+ }  // namespace base::debug
++
++#endif  // defined(WINUWP)
+diff --git a/base/debug/stack_trace_win.cc b/base/debug/stack_trace_win.cc
+index 84121e5..00f1326 100644
+--- a/base/debug/stack_trace_win.cc
++++ b/base/debug/stack_trace_win.cc
+@@ -4,6 +4,62 @@
+ 
+ #include "base/debug/stack_trace.h"
+ 
++#if defined(WINUWP)
++
++#include <windows.h>
++
++#include <algorithm>
++#include <iostream>
++
++#include "base/compiler_specific.h"
++
++namespace base::debug {
++
++// DbgHelp and StackWalk64 are desktop-only. Retain raw return addresses.
++bool EnableInProcessStackDumping() { return false; }
++bool DisableInProcessStackDumpingForTesting() { return true; }
++bool InProcessStackDumpingEnabledForTesting() { return false; }
++
++NOINLINE size_t CollectStackTrace(span<const void*> trace) {
++  return CaptureStackBackTrace(0, static_cast<DWORD>(trace.size()),
++                               const_cast<void**>(trace.data()), nullptr);
++}
++
++StackTrace::StackTrace(EXCEPTION_POINTERS* exception_pointers) {
++  InitTrace(exception_pointers->ContextRecord);
++}
++
++StackTrace::StackTrace(const CONTEXT* context) { InitTrace(context); }
++
++void StackTrace::InitTrace(const CONTEXT* context_record) {
++  std::ranges::fill(trace_, nullptr);
++  if (context_record && !ShouldSuppressOutput()) {
++    trace_[0] = reinterpret_cast<const void*>(
++        static_cast<uintptr_t>(context_record->Pc));
++    count_ = 1;
++  }
++}
++
++void StackTrace::PrintMessageWithPrefix(cstring_view prefix_string,
++                                        cstring_view message) {
++  std::cerr << prefix_string << message;
++}
++
++void StackTrace::PrintWithPrefixImpl(cstring_view prefix_string) const {
++  OutputToStreamWithPrefixImpl(&std::cerr, prefix_string);
++}
++
++void StackTrace::OutputToStreamWithPrefixImpl(
++    std::ostream* os, cstring_view prefix_string) const {
++  for (const void* address : addresses()) {
++    *os << prefix_string << address << '\n';
++  }
++}
++
++}  // namespace base::debug
++
++#else
++
+ #include <windows.h>
+ 
+ #include <dbghelp.h>
+@@ -476,3 +532,5 @@ void StackTrace::OutputToStreamWithPrefixImpl(
+ }
+ 
+ }  // namespace base::debug
++
++#endif  // defined(WINUWP)
+diff --git a/base/file_version_info_win.cc b/base/file_version_info_win.cc
+index 8a2b942..8fd895d 100644
+--- a/base/file_version_info_win.cc
++++ b/base/file_version_info_win.cc
+@@ -5,6 +5,7 @@
+ #include "base/file_version_info_win.h"
+ 
+ #include <windows.h>
++#include <verrsrc.h>
+ 
+ #include <stddef.h>
+ 
+@@ -17,6 +18,27 @@
+ #include "base/threading/scoped_blocking_call.h"
+ #include "base/win/resource_util.h"
+ 
++#if defined(WINUWP)
++// The SDK hides this standard version-resource structure from phone apps.
++struct tagVS_FIXEDFILEINFO {
++  DWORD dwSignature;
++  DWORD dwStrucVersion;
++  DWORD dwFileVersionMS;
++  DWORD dwFileVersionLS;
++  DWORD dwProductVersionMS;
++  DWORD dwProductVersionLS;
++  DWORD dwFileFlagsMask;
++  DWORD dwFileFlags;
++  DWORD dwFileOS;
++  DWORD dwFileType;
++  DWORD dwFileSubtype;
++  DWORD dwFileDateMS;
++  DWORD dwFileDateLS;
++};
++using VS_FIXEDFILEINFO = tagVS_FIXEDFILEINFO;
++static_assert(sizeof(VS_FIXEDFILEINFO) == 52);
++#endif
++
+ namespace {
+ 
+ struct LanguageAndCodePage {
+diff --git a/base/files/drive_info_win.cc b/base/files/drive_info_win.cc
+index e9ff908..a2b485b 100644
+--- a/base/files/drive_info_win.cc
++++ b/base/files/drive_info_win.cc
+@@ -14,6 +14,10 @@
+ namespace base {
+ 
+ std::optional<DriveInfo> GetFileDriveInfo(const FilePath& path) {
++#if defined(WINUWP)
++  // Phone applications cannot open a volume device for physical-drive data.
++  return std::nullopt;
++#else
+   std::vector<FilePath::StringType> components = path.GetComponents();
+ 
+   File volume(FilePath(L"\\\\.\\" + components[0]), File::FLAG_OPEN);
+@@ -69,6 +73,7 @@ std::optional<DriveInfo> GetFileDriveInfo(const FilePath& path) {
+   }
+ 
+   return info;
++#endif
+ }
+ 
+ }  // namespace base
 diff --git a/base/files/file_path.cc b/base/files/file_path.cc
 index 2398b4f..3ae2eb6 100644
 --- a/base/files/file_path.cc
@@ -386,6 +734,20 @@ index b7221d7..afe17a6 100644
  #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
    g_log_file = fopen(g_log_file_name->c_str(), "a");
    if (g_log_file == nullptr) {
+diff --git a/base/memory/discardable_shared_memory.cc b/base/memory/discardable_shared_memory.cc
+index 75bd7b4..a67c439 100644
+--- a/base/memory/discardable_shared_memory.cc
++++ b/base/memory/discardable_shared_memory.cc
+@@ -453,6 +453,9 @@ bool DiscardableSharedMemory::Purge(Time current_time) {
+   if (madvise(map.data(), AlignToPageSize(map.size()), MADV_PURGE_ARGUMENT)) {
+     DPLOG(ERROR) << "madvise() failed";
+   }
++#elif BUILDFLAG(IS_WIN) && defined(WINUWP)
++  // Windows Phone 8.1 has no discard/reset API for mapped shared pages.
++  // The mapping is released when the segment is freed.
+ #elif BUILDFLAG(IS_WIN)
+   // On Windows, discarded pages are not returned to the system immediately and
+   // not guaranteed to be zeroed when returned to the application.
 diff --git a/base/metrics/persistent_histogram_storage.cc b/base/metrics/persistent_histogram_storage.cc
 index 4475ed0..1f238c7 100644
 --- a/base/metrics/persistent_histogram_storage.cc
@@ -436,6 +798,160 @@ index 349060a..6e7bec8 100644
  #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
    int result = ::munmap(memory, size);
    DCHECK_EQ(0, result);
+diff --git a/base/power_monitor/cpu_frequency_utils.cc b/base/power_monitor/cpu_frequency_utils.cc
+index 9aa8afa..8c043d0 100644
+--- a/base/power_monitor/cpu_frequency_utils.cc
++++ b/base/power_monitor/cpu_frequency_utils.cc
+@@ -105,7 +105,7 @@ BASE_EXPORT CpuFrequencyInfo GetCpuFrequencyInfo() {
+       .num_active_cpus = 0,
+   };
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP)
+   unsigned long fastest = std::numeric_limits<unsigned long>::min();
+   unsigned long slowest = std::numeric_limits<unsigned long>::max();
+ 
+@@ -155,6 +155,7 @@ BASE_EXPORT CpuFrequencyInfo GetCpuFrequencyInfo() {
+ 
+ #if BUILDFLAG(IS_WIN)
+ void GenerateCpuInfoForTracingMetadata(base::DictValue* metadata) {
++#if !defined(WINUWP)
+   size_t num_cpu = static_cast<size_t>(base::SysInfo::NumberOfProcessors());
+   std::vector<PROCESSOR_POWER_INFORMATION> info(num_cpu);
+   if (!NT_SUCCESS(CallNtPowerInformation(
+@@ -188,6 +189,7 @@ void GenerateCpuInfoForTracingMetadata(base::DictValue* metadata) {
+           static_cast<int>(i.MaxIdleState));
+     }
+   }
++#endif
+ }
+ #endif
+ 
+diff --git a/base/power_monitor/power_monitor_device_source.h b/base/power_monitor/power_monitor_device_source.h
+index c791858..b248b75 100644
+--- a/base/power_monitor/power_monitor_device_source.h
++++ b/base/power_monitor/power_monitor_device_source.h
+@@ -70,7 +70,7 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
+  private:
+   friend class PowerMonitorDeviceSourceTest;
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP)
+   // Represents a message-only window for power message handling on Windows.
+   // Only allow PowerMonitor to create it.
+   class PowerMessageWindow {
+@@ -91,7 +91,7 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
+     // A handle, returned when we register for power setting notification
+     HPOWERNOTIFY power_notify_handle_ = nullptr;
+   };
+-#endif  // BUILDFLAG(IS_WIN)
++#endif  // BUILDFLAG(IS_WIN) && !defined(WINUWP)
+ 
+ #if (BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_IOS_TVOS)) || BUILDFLAG(IS_WIN)
+   void PlatformInit();
+@@ -159,7 +159,7 @@ class BASE_EXPORT PowerMonitorDeviceSource : public PowerMonitorSource {
+   std::vector<id> notification_observers_;
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP)
+   PowerMessageWindow power_message_window_;
+   // |speed_limit_observer_| is owned by the main/UI thread but the
+   // SpeedLimitObserverWin is bound to a different sequence.
+diff --git a/base/power_monitor/power_monitor_device_source_win.cc b/base/power_monitor/power_monitor_device_source_win.cc
+index bde840b..9547bc8 100644
+--- a/base/power_monitor/power_monitor_device_source_win.cc
++++ b/base/power_monitor/power_monitor_device_source_win.cc
+@@ -13,7 +13,9 @@
+ #include "base/task/current_thread.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/thread_pool.h"
++#if !defined(WINUWP)
+ #include "base/win/wrapped_window_proc.h"
++#endif
+ 
+ namespace base {
+ 
+@@ -21,6 +23,7 @@ void ProcessPowerEventHelper(PowerMonitorSource::PowerEvent event) {
+   PowerMonitorSource::ProcessPowerEvent(event);
+ }
+ 
++#if !defined(WINUWP)
+ namespace {
+ 
+ constexpr wchar_t kWindowClassName[] = L"Base_PowerMessageWindow";
+@@ -56,8 +59,10 @@ void ProcessWmPowerBroadcastMessage(WPARAM event_id) {
+ }
+ 
+ }  // namespace
++#endif
+ 
+ void PowerMonitorDeviceSource::PlatformInit() {
++#if !defined(WINUWP)
+   // Only for testing.
+   if (!CurrentUIThread::IsSet()) {
+     return;
+@@ -65,17 +70,24 @@ void PowerMonitorDeviceSource::PlatformInit() {
+   speed_limit_observer_.emplace(
+       base::ThreadPool::CreateSequencedTaskRunner({}),
+       BindRepeating(&PowerMonitorSource::ProcessSpeedLimitEvent));
++#endif
+ }
+ 
+ void PowerMonitorDeviceSource::PlatformDestroy() {
++#if !defined(WINUWP)
+   // Because |speed_limit_observer_| is sequence bound, the actual destruction
+   // happens asynchronously on its task runner. Until this has completed it is
+   // still possible for PowerMonitorSource::ProcessSpeedLimitEvent to be called.
+   speed_limit_observer_.Reset();
++#endif
+ }
+ 
+ PowerStateObserver::BatteryPowerStatus
+ PowerMonitorDeviceSource::GetBatteryPowerStatus() const {
++#if defined(WINUWP)
++  // The desktop GetSystemPowerStatus API is absent from Windows Phone 8.1.
++  return PowerStateObserver::BatteryPowerStatus::kUnknown;
++#else
+   SYSTEM_POWER_STATUS status;
+   if (!::GetSystemPowerStatus(&status)) {
+     DPLOG(ERROR) << "GetSystemPowerStatus failed";
+@@ -84,6 +96,7 @@ PowerMonitorDeviceSource::GetBatteryPowerStatus() const {
+   return (status.ACLineStatus == 0)
+              ? PowerStateObserver::BatteryPowerStatus::kBatteryPower
+              : PowerStateObserver::BatteryPowerStatus::kExternalPower;
++#endif
+ }
+ 
+ int PowerMonitorDeviceSource::GetInitialSpeedLimit() const {
+@@ -92,6 +105,7 @@ int PowerMonitorDeviceSource::GetInitialSpeedLimit() const {
+   return PowerThermalObserver::kSpeedLimitMax;
+ }
+ 
++#if !defined(WINUWP)
+ PowerMonitorDeviceSource::PowerMessageWindow::PowerMessageWindow() {
+   if (!CurrentUIThread::IsSet()) {
+     // Creating this window in (e.g.) a renderer inhibits shutdown on Windows.
+@@ -146,5 +160,6 @@ PowerMonitorDeviceSource::PowerMessageWindow::WndProcThunk(HWND hwnd,
+       return ::DefWindowProc(hwnd, message, wparam, lparam);
+   }
+ }
++#endif
+ 
+ }  // namespace base
+diff --git a/base/process/kill_win.cc b/base/process/kill_win.cc
+index 7816a51..fe9bb3b 100644
+--- a/base/process/kill_win.cc
++++ b/base/process/kill_win.cc
+@@ -110,7 +110,7 @@ bool WaitForProcessesToExit(const FilePath::StringType& executable_name,
+     DWORD remaining_wait = static_cast<DWORD>(
+         std::max(static_cast<int64_t>(0),
+                  wait.InMilliseconds() - (GetTickCount() - start_time)));
+-    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, entry->th32ProcessID);
++    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, entry->pid());
+     DWORD wait_result = WaitForSingleObject(process, remaining_wait);
+     CloseHandle(process);
+     result &= (wait_result == WAIT_OBJECT_0);
 diff --git a/base/process/memory.h b/base/process/memory.h
 index b8147f0..2af3326 100644
 --- a/base/process/memory.h
@@ -452,6 +968,226 @@ index b8147f0..2af3326 100644
  
  }  // namespace win
  #endif
+diff --git a/base/process/process_handle_win.cc b/base/process/process_handle_win.cc
+index 9327fae..59d1e02 100644
+--- a/base/process/process_handle_win.cc
++++ b/base/process/process_handle_win.cc
+@@ -33,6 +33,7 @@ ProcessId GetProcId(ProcessHandle process) {
+   return result;
+ }
+ 
++#if !defined(WINUWP)
+ // Local definition to include InheritedFromUniqueProcessId which contains a
+ // unique identifier for the parent process. See documentation at:
+ // https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess
+@@ -43,8 +44,12 @@ typedef struct _PROCESS_BASIC_INFORMATION {
+   ULONG_PTR UniqueProcessId;
+   ULONG_PTR InheritedFromUniqueProcessId;
+ } PROCESS_BASIC_INFORMATION;
++#endif
+ 
+ ProcessId GetParentProcessId(ProcessHandle process) {
++#if defined(WINUWP)
++  return 0;
++#else
+   PROCESS_BASIC_INFORMATION pbi = {};
+   // TODO(zijiehe): To match other platforms, -1 (UINT32_MAX) should be returned
+   // if the parent process id cannot be found.
+@@ -55,6 +60,7 @@ ProcessId GetParentProcessId(ProcessHandle process) {
+   }
+ 
+   return pid;
++#endif
+ }
+ 
+ }  // namespace base
+diff --git a/base/process/process_iterator.h b/base/process/process_iterator.h
+index 537482c..82fbec0 100644
+--- a/base/process/process_iterator.h
++++ b/base/process/process_iterator.h
+@@ -24,7 +24,9 @@
+ #if BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ 
++#if !defined(WINUWP)
+ #include <tlhelp32.h>
++#endif
+ #elif BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_OPENBSD)
+ #include <sys/sysctl.h>
+ #elif BUILDFLAG(IS_FREEBSD)
+@@ -35,7 +37,14 @@
+ 
+ namespace base {
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP)
++// Process enumeration is unavailable to a Windows Phone app container.
++struct ProcessEntry {
++  ProcessId pid() const { return 0; }
++  ProcessId parent_pid() const { return 0; }
++  const FilePath::CharType* exe_file() const { return L""; }
++};
++#elif BUILDFLAG(IS_WIN)
+ struct ProcessEntry : public PROCESSENTRY32 {
+   ProcessId pid() const { return th32ProcessID; }
+   ProcessId parent_pid() const { return th32ParentProcessID; }
+@@ -114,7 +123,7 @@ class BASE_EXPORT ProcessIterator {
+   // that process's info if there is one, false otherwise.
+   bool CheckForNextProcess();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP)
+   HANDLE snapshot_;
+   bool started_iteration_ = false;
+ #elif BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_BSD)
+diff --git a/base/process/process_iterator_win.cc b/base/process/process_iterator_win.cc
+index b2211d6..e027289 100644
+--- a/base/process/process_iterator_win.cc
++++ b/base/process/process_iterator_win.cc
+@@ -9,14 +9,23 @@
+ namespace base {
+ 
+ ProcessIterator::ProcessIterator(const ProcessFilter* filter)
++#if defined(WINUWP)
++    : filter_(filter) {}
++#else
+     : snapshot_(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)),
+       filter_(filter) {}
++#endif
+ 
+ ProcessIterator::~ProcessIterator() {
++#if !defined(WINUWP)
+   CloseHandle(snapshot_);
++#endif
+ }
+ 
+ bool ProcessIterator::CheckForNextProcess() {
++#if defined(WINUWP)
++  return false;
++#else
+   entry_ = ProcessEntry{{.dwSize = sizeof(entry_)}};
+ 
+   if (!started_iteration_) {
+@@ -25,6 +34,7 @@ bool ProcessIterator::CheckForNextProcess() {
+   }
+ 
+   return !!Process32Next(snapshot_, &entry_);
++#endif
+ }
+ 
+ bool NamedProcessIterator::IncludeEntry() {
+diff --git a/base/profiler/register_context_registers.h b/base/profiler/register_context_registers.h
+index a600208..02b014b 100644
+--- a/base/profiler/register_context_registers.h
++++ b/base/profiler/register_context_registers.h
+@@ -45,6 +45,8 @@ inline uintptr_t RegisterContextStackPointer(::CONTEXT* context) {
+   return context->Rsp;
+ #elif defined(ARCH_CPU_ARM64)
+   return context->Sp;
++#elif defined(ARCH_CPU_ARMEL)
++  return context->Sp;
+ #elif defined(ARCH_CPU_X86)
+   return context->Esp;
+ #else
+@@ -57,6 +59,8 @@ inline void SetRegisterContextStackPointer(::CONTEXT* context, uintptr_t val) {
+   context->Rsp = val;
+ #elif defined(ARCH_CPU_ARM64)
+   context->Sp = val;
++#elif defined(ARCH_CPU_ARMEL)
++  context->Sp = val;
+ #elif defined(ARCH_CPU_X86)
+   context->Esp = val;
+ #else
+@@ -69,6 +73,8 @@ inline uintptr_t RegisterContextFramePointer(::CONTEXT* context) {
+   return context->Rbp;
+ #elif defined(ARCH_CPU_ARM64)
+   return context->Fp;
++#elif defined(ARCH_CPU_ARMEL)
++  return context->R11;
+ #elif defined(ARCH_CPU_X86)
+   return context->Ebp;
+ #else
+@@ -81,6 +87,8 @@ inline void SetRegisterContextFramePointer(::CONTEXT* context, uintptr_t val) {
+   context->Rbp = val;
+ #elif defined(ARCH_CPU_ARM64)
+   context->Fp = val;
++#elif defined(ARCH_CPU_ARMEL)
++  context->R11 = val;
+ #elif defined(ARCH_CPU_X86)
+   context->Ebp = val;
+ #else
+@@ -93,6 +101,8 @@ inline uintptr_t RegisterContextInstructionPointer(::CONTEXT* context) {
+   return context->Rip;
+ #elif defined(ARCH_CPU_ARM64)
+   return context->Pc;
++#elif defined(ARCH_CPU_ARMEL)
++  return context->Pc;
+ #elif defined(ARCH_CPU_X86)
+   return context->Eip;
+ #else
+@@ -106,6 +116,8 @@ inline void SetRegisterContextInstructionPointer(::CONTEXT* context,
+   context->Rip = val;
+ #elif defined(ARCH_CPU_ARM64)
+   context->Pc = val;
++#elif defined(ARCH_CPU_ARMEL)
++  context->Pc = val;
+ #elif defined(ARCH_CPU_X86)
+   context->Eip = val;
+ #else
+diff --git a/base/task/thread_pool/pooled_single_thread_task_runner_manager.cc b/base/task/thread_pool/pooled_single_thread_task_runner_manager.cc
+index 797febf..520b966 100644
+--- a/base/task/thread_pool/pooled_single_thread_task_runner_manager.cc
++++ b/base/task/thread_pool/pooled_single_thread_task_runner_manager.cc
+@@ -381,6 +381,7 @@ class WorkerThreadCOMDelegate : public WorkerThreadDelegate {
+       }
+     }
+ 
++#if !defined(WINUWP)
+     if (!task_source) {
+       CheckedAutoUnlock auto_unlock(lock_);
+       task_source = GetWorkFromWindowsMessageQueue();
+@@ -388,6 +389,7 @@ class WorkerThreadCOMDelegate : public WorkerThreadDelegate {
+         get_work_first_ = true;
+       }
+     }
++#endif
+ 
+     if (!task_source && !get_work_first_) {
+       // This case is important if we checked the Windows Message Queue first
+@@ -415,11 +417,16 @@ class WorkerThreadCOMDelegate : public WorkerThreadDelegate {
+     const DWORD milliseconds_wait = checked_cast<DWORD>(
+         sleep_time.is_max() ? INFINITE : sleep_time.InMilliseconds());
+     const HANDLE wake_up_event_handle = wake_up_event_.handle();
++#if defined(WINUWP)
++    WaitForSingleObjectEx(wake_up_event_handle, milliseconds_wait, FALSE);
++#else
+     MsgWaitForMultipleObjectsEx(1, &wake_up_event_handle, milliseconds_wait,
+                                 QS_ALLINPUT, 0);
++#endif
+   }
+ 
+  private:
++#if !defined(WINUWP)
+   RegisteredTaskSource GetWorkFromWindowsMessageQueue() {
+     MSG msg;
+     if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE) != FALSE) {
+@@ -456,13 +463,16 @@ class WorkerThreadCOMDelegate : public WorkerThreadDelegate {
+     }
+     return nullptr;
+   }
++#endif
+ 
+   bool get_work_first_ = true;
++#if !defined(WINUWP)
+   const scoped_refptr<Sequence> message_pump_sequence_ =
+       MakeRefCounted<Sequence>(TaskTraits{MayBlock()},
+                                nullptr,
+                                TaskSourceExecutionMode::kParallel,
+                                GetCurrentTaskImportance());
++#endif
+   std::unique_ptr<win::ScopedCOMInitializer> scoped_com_initializer_;
+ };
+ 
 diff --git a/base/win/pe_image.cc b/base/win/pe_image.cc
 index be011c9..fc83e71 100644
 --- a/base/win/pe_image.cc
@@ -497,6 +1233,84 @@ index be011c9..fc83e71 100644
        if (target_module_name) {
          // Ensure all imports are properly loaded for the target module so that
          // the callback is operating on a fully-realized set of imports.
+diff --git a/base/win/scoped_com_initializer.cc b/base/win/scoped_com_initializer.cc
+index 22d1bd5..e42d65e 100644
+--- a/base/win/scoped_com_initializer.cc
++++ b/base/win/scoped_com_initializer.cc
+@@ -4,7 +4,9 @@
+ 
+ #include "base/win/scoped_com_initializer.h"
+ 
++#if !defined(WINUWP)
+ #include <wrl/implements.h>
++#endif
+ 
+ #include <ostream>
+ 
+@@ -26,10 +28,12 @@ ScopedCOMInitializer::ScopedCOMInitializer(SelectMTA mta,
+ ScopedCOMInitializer::~ScopedCOMInitializer() {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   if (Succeeded()) {
++#if !defined(WINUWP)
+     if (com_balancer_) {
+       com_balancer_->Disable();
+       com_balancer_.Reset();
+     }
++#endif
+     ::CoUninitialize();
+   }
+ }
+@@ -39,9 +43,11 @@ bool ScopedCOMInitializer::Succeeded() const {
+ }
+ 
+ DWORD ScopedCOMInitializer::GetCOMBalancerReferenceCountForTesting() const {
++#if !defined(WINUWP)
+   if (com_balancer_) {
+     return com_balancer_->GetReferenceCountForTesting();
+   }
++#endif
+   return 0;
+ }
+ 
+@@ -50,10 +56,14 @@ void ScopedCOMInitializer::Initialize(COINIT init,
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   // COINIT_DISABLE_OLE1DDE is always added based on:
+   // https://docs.microsoft.com/en-us/windows/desktop/learnwin32/initializing-the-com-library
++#if !defined(WINUWP)
+   if (uninitialization == Uninitialization::kBlockPremature) {
+     com_balancer_ = Microsoft::WRL::Details::Make<internal::ComInitBalancer>(
+         init | COINIT_DISABLE_OLE1DDE);
+   }
++#else
++  static_cast<void>(uninitialization);
++#endif
+ 
+   hr_ = ::CoInitializeEx(nullptr, init | COINIT_DISABLE_OLE1DDE);
+   DCHECK_NE(RPC_E_CHANGED_MODE, hr_) << "Invalid COM thread model change";
+diff --git a/base/win/scoped_com_initializer.h b/base/win/scoped_com_initializer.h
+index 2f03641..d48cbcd 100644
+--- a/base/win/scoped_com_initializer.h
++++ b/base/win/scoped_com_initializer.h
+@@ -11,7 +11,9 @@
+ 
+ #include "base/base_export.h"
+ #include "base/threading/thread_checker.h"
++#if !defined(WINUWP)
+ #include "base/win/com_init_balancer.h"
++#endif
+ #include "base/win/scoped_windows_thread_environment.h"
+ 
+ namespace base {
+@@ -70,7 +72,9 @@ class BASE_EXPORT ScopedCOMInitializer : public ScopedWindowsThreadEnvironment {
+   void Initialize(COINIT init, Uninitialization uninitialization);
+ 
+   HRESULT hr_ = S_OK;
++#if !defined(WINUWP)
+   Microsoft::WRL::ComPtr<internal::ComInitBalancer> com_balancer_;
++#endif
+   THREAD_CHECKER(thread_checker_);
+ };
+ 
 diff --git a/build/config/clang/BUILD.gn b/build/config/clang/BUILD.gn
 index f81d22c..99ea19b 100644
 --- a/build/config/clang/BUILD.gn
@@ -1222,6 +2036,48 @@ index f353476..7de9bb8 100644
      data_deps += [ "//third_party/perfetto/src/trace_processor:trace_processor_shell($default_toolchain)" ]
    }
  
+diff --git a/v8/BUILD.gn b/v8/BUILD.gn
+index 091e894..71329b1 100644
+--- a/v8/BUILD.gn
++++ b/v8/BUILD.gn
+@@ -1247,7 +1247,7 @@ if (target_os == "android") {
+ } else if (target_os == "mac") {
+   enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
+   enabled_external_v8_defines += [ "V8_TARGET_OS_MACOS" ]
+-} else if (target_os == "win") {
++} else if (target_os == "win" || target_os == "winuwp") {
+   enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
+   enabled_external_v8_defines += [ "V8_TARGET_OS_WIN" ]
+ } else if (target_os == "chromeos") {
+@@ -2114,6 +2114,7 @@ template("asm_to_inline_asm") {
+     sources = [ "$target_gen_dir/embedded${suffix}.S" ]
+     outputs = [ "$target_gen_dir/embedded${suffix}.cc" ]
+     args = invoker.args
++
+     args += [
+       rebase_path("$target_gen_dir/embedded${suffix}.S", root_build_dir),
+       rebase_path("$target_gen_dir/embedded${suffix}.cc", root_build_dir),
+@@ -3287,6 +3288,11 @@ template("run_mksnapshot") {
+       data += [ "$root_out_dir/mksnapshot_output${suffix}.log" ]
+     }
+ 
++    _snapshot_target_os = current_os
++    if (current_os == "winuwp") {
++      _snapshot_target_os = "win"
++    }
++
+     args += [
+       "./" + rebase_path(get_label_info(":mksnapshot($v8_snapshot_toolchain)",
+                                         "root_out_dir") + "/mksnapshot",
+@@ -3297,7 +3303,7 @@ template("run_mksnapshot") {
+       # target toolchains.  The same host binary is used to generate both, so
+       # mksnapshot needs to know which target OS to use at runtime.  It's weird,
+       # but the target OS is really |current_os|.
+-      "--target_os=$current_os",
++      "--target_os=$_snapshot_target_os",
+       "--target_arch=$current_cpu",
+ 
+       "--embedded_src",
 diff --git a/v8/src/base/cpu/cpu-arm.cc b/v8/src/base/cpu/cpu-arm.cc
 index 4a29ee6..f86f2f1 100644
 --- a/v8/src/base/cpu/cpu-arm.cc

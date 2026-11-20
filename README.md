@@ -2,7 +2,7 @@
 
 Community port of the open-source Chromium browser to Windows Phone 8.1 on ARM32. This project is **experimental**. There is currently no installable browser package and no confirmed on-device navigation.
 
-The working source baseline is Chromium `159.0.8154.13`. The build experiments target `winuwp`, `arm`, and the Windows Phone 8.1 API family. Existing Windows desktop code, V8 snapshot generation, and the Windows Phone application model still require substantial porting. The first [experimental source patch](patches/0001-experimental-arm32-build.patch) applies to a clean source tree, but does not produce a browser yet. Build instructions and third-party notices will be completed before any release.
+The working source baseline is Chromium `159.0.8154.13`. The build experiments target `winuwp`, `arm`, and the Windows Phone 8.1 API family. The [experimental source patch](patches/0001-experimental-arm32-build.patch) applies to a clean source tree, but does not produce a browser yet. Build instructions and third-party notices will be completed before any release.
 
 ## Project scope
 
@@ -18,4 +18,8 @@ Chromium's source is distributed under its BSD-style license, included in [LICEN
 
 ## Status
 
-Work in progress. Do not download or share this project as a functional browser release yet.
+As of 20 November 2026, the ARM32 Windows configuration generates with GN. A Linux x86 host build produced V8's `mksnapshot`; it generated a Windows ARM32 snapshot, and Clang assembled its embedded output as an ARMv7 COFF object. Ninja ran eight jobs in parallel. This validates build steps, not the snapshot's behavior on the phone.
+
+The Chromium `base` library still has twelve failing Windows Phone source files, including file access, message dispatch, process launch, battery reporting, and profiling. There is no linked browser, phone package, or on-device navigation test. No firmware was flashed or written during this work. The experimental V8 configuration also disables WebAssembly, which limits modern-site compatibility.
+
+See [current build evidence and blockers](docs/progress.md). Do not present this repository as a functional browser release.

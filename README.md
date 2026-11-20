@@ -2,7 +2,7 @@
 
 Community port of the open-source Chromium browser to Windows Phone 8.1 on ARM32. This project is **experimental**. There is currently no installable browser package and no confirmed on-device navigation.
 
-The working source baseline is Chromium `159.0.8154.13`. The build experiments target `winuwp`, `arm`, and the Windows Phone 8.1 API family. The [experimental source patch](patches/0001-experimental-arm32-build.patch) applies to a clean source tree, but does not produce a browser yet. Build instructions and third-party notices will be completed before any release.
+The working source baseline is Chromium `159.0.8154.13`. The build experiments target `winuwp`, `arm`, and the Windows Phone 8.1 API family. The [experimental source patch](patches/0001-experimental-arm32-build.patch) applies to a clean source tree, but does not produce a browser yet. [Build notes](docs/building.md) describe the current compile probes. Third-party notices will be completed before any binary release.
 
 ## Project scope
 
@@ -18,8 +18,10 @@ Chromium's source is distributed under its BSD-style license, included in [LICEN
 
 ## Status
 
-As of 20 November 2026, the ARM32 Windows configuration generates with GN. A Linux x86 host build produced V8's `mksnapshot`; it generated a Windows ARM32 snapshot, and Clang assembled its embedded output as an ARMv7 COFF object. Ninja ran eight jobs in parallel. This validates build steps, not the snapshot's behavior on the phone.
+As of 20 November 2026, GN generates 36,377 ARM32 targets against the actual Windows Phone 8.1 SDK. Ninja has built the `base.lib` static archive, including ARMv7 Thumb COFF objects for the Phone clock and threading implementation. The WinRT `content_shell` entry point and browser runner also compile as ARM32 objects. Linux IA32 V8 generators run from the macOS GN graph through a Docker launcher: they generated a Windows ARM32 V8 snapshot and embedded assembly. Clang separately assembled the embedded output as an ARMv7 COFF object.
 
-The Chromium `base` library still has fourteen failing Windows Phone source files in the latest build attempt, including file access, message dispatch, process launch, IPC, battery reporting, and profiling. There is no linked browser, phone package, or on-device navigation test. No firmware was flashed or written during this work. The experimental V8 configuration also disables WebAssembly, which limits modern-site compatibility.
+The browser entry point uses `IFrameworkView` and `--single-process`. This is a work in progress: renderer isolation is absent, the visible window has not been ported to `CoreWindow`, and the full browser has not linked. Windows Phone apps cannot use Chromium's IO completion port backend; this patch uses an event based task pump, while direct IO completion port registrations fail explicitly. The shell's default memory cache and default Winsock event transport do not require that registration. Immutable ICU, V8 and `.pak` assets have a bounded copy reader. A process-local Mojo data pipe now compiles and its ring storage passed an isolated host test; it has not been exercised by a page load or on the phone.
+
+There is no linked browser, APPX, or on-device navigation test. Incremental `content_shell` runs with six parallel Ninja jobs have progressed beyond 2,700 build steps. Phone-targeted WebRTC, ICU, font, Mojo, and selected Skia objects have compiled, but these isolated results do not establish a working browser. Crashpad is disabled in the Phone graph, and a further broad build is in progress. No phone storage or firmware was written during this work. The experimental V8 configuration disables WebAssembly, which limits modern-site compatibility.
 
 See [current build evidence and blockers](docs/progress.md). Do not present this repository as a functional browser release.

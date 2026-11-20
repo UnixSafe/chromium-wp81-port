@@ -1,36 +1,27 @@
 # Build progress and open blockers
 
-This document records local experiments against Chromium `159.0.8154.13` on 20 November 2026. It is not a release or a device test.
+These are local experiments against Chromium `159.0.8154.13` on 20 November 2026. They are neither a release nor a device test.
 
 ## Verified locally
 
-- The patch in this repository passes `git apply --check` against the pristine Chromium source files it changes (74 files).
-- GN generates a `winuwp` / ARM32 / Windows Phone 8.1 build graph. It does not prove that the linked binaries would use only APIs present on Windows Phone 8.1. The current cross-build uses Windows 10 SDK headers and libraries.
-- V8's `mksnapshot` was built for a Linux x86 host with eight parallel Ninja jobs. Running it with `--target_os=win --target_arch=arm` generated a 2.8 MB snapshot blob and a 13 MB embedded assembly file.
-- Clang compiled that embedded assembly into a 5.4 MB ARMv7 Thumb COFF object.
-- The ARM32 Chromium `base` build reached remaining errors in fourteen source files, listed below. New errors appear as earlier compilation blockers are resolved.
+- The current patch passes `git apply --check` against the corresponding pristine Chromium source. It contains no Microsoft SDK files or Google Chrome branding.
+- An ARM32 `winuwp` / Phone 8.1 graph generates with GN: 36,377 targets from 5,010 files, with Skia's optional Dawn backend disabled. The cross-build now uses the **Windows Phone 8.1 SDK headers and ARM import libraries**, extracted from Microsoft's Visual Studio ISO. The SDK files stay outside this repository.
+- With precompiled headers and Control Flow Guard disabled for Phone 8.1, Ninja builds `message_pump_win.obj`, `object_watcher.obj`, and `waitable_event_win.obj` against that Phone SDK. The `IFrameworkView` shell entry point and `BrowserMainRunnerImpl` compile as ARM32 Thumb COFF objects with the same headers, using their GN compiler commands directly. BoringSSL entropy, zlib, Abseil time zone and random seed, Protobuf IO, and selected Perfetto components also compile against the Phone SDK.
+- The configured `base` target now builds to `obj/base/base.lib` with `ninja -j6`. It is a thin static archive containing ARMv7 Thumb COFF objects, not a linked executable. The Phone-only graph omits desktop-only token, GDI, shell, ETW and stack-profiling units. New file, Mojo, clock and thread Phone paths use the `WINUWP_8_1` plus `WINAPI_FAMILY_PHONE_APP` guard. Clock, thread creation, COM apartment queries and file operations use APIs available in the Phone SDK; unavailable telemetry returns an error or empty result.
+- Targeted builds now also compile WebRTC network and threading units, libjpeg, BoringSSL key-provider adapters, Mojo's local data-pipe and external-channel adapters, ICU's data and timezone units, Expat, FreeType, HarfBuzz, and selected Skia raster and file adapters as ARMv7 Thumb COFF objects. Unsupported cross-process Mojo handle transport and named-pipe server functions fail explicitly. FreeType's optional environment property override is disabled on Phone; no system font discovery or display test exists.
+- The Phone `content_shell` graph excludes Crashpad and uses Chromium's existing disabled crash-key implementation. GN inspection found no Crashpad target among its 14,338 transitive dependencies after this change; the browser will have no Crashpad reports. Skia's XPS and desktop DirectWrite sources are excluded. Its ARM32 raster pipeline and semaphore objects compile, but rendering on the phone remains untested.
+- The entry point invokes `content::ContentMain` with `--single-process`. The UI pump dispatches through `ICoreDispatcher`. The IO pump uses a waitable event for task scheduling. `ObjectWatcher` uses `WaitForMultipleObjectsEx` and returns notifications to the owning sequence.
+- Chromium's default TCP backend uses `WSAEventSelect` and the event watcher. The Phone SDK exposes `WSAEventSelect`; the shell's configured HTTP cache is in memory. In-process Mojo message pipes exist. HTTP response bodies use Mojo data pipes; a Phone-only process-local ring backend now compiles into ARM32 objects. A small host test verified zeroed storage, producer/consumer visibility, wraparound and data survival after producer destruction. The backend refuses serialization across a transport. No full HTTP request or phone runtime has been tested.
+- ICU data, V8 startup data and `.pak` resources now use a 64 MiB-bounded immutable copy reader on Phone. The relevant ARM32 objects compile. Writable and transportable shared mappings still fail explicitly. A `.pak` gzip read also enforces its decompressed output limit.
+- Four V8 generators (`mksnapshot`, Torque, bytecode builtins, regexp special case) were built for a Linux IA32 host with six parallel Ninja jobs. The macOS GN graph launches them through a network-isolated Docker runner and verifies 19 matching V8 target configuration values before use. The `run_mksnapshot_default` GN action produced `snapshot_blob.bin` (2,891,236 bytes, SHA-256 `2cd16fca6c54f96453ab953a6e4e459530e4cf4e2877b5ff3f979dd49a18aa1f`), `embedded.S` (13,910,875 bytes), and `builtins-effects.cc` (131,411 bytes) for Windows ARM32. These are generated assets, not an executable browser. A previous direct Linux host experiment also assembled the embedded output into a 5.4 MB ARMv7 Thumb COFF object.
 
-## Current `base` compile failures
+## Build and runtime blockers
 
-The latest parallel `ninja -j8 base` attempt still fails in:
+- No Chromium browser executable has linked. The `base` static archive builds, but this does not validate its symbols against a final executable. Eight incremental `content_shell` attempts with `ninja -j6 -k10` advanced from the first failure at 130 of roughly 38,800 steps to more than 2,700 steps in the latest completed attempt. Its Skia ARM calling-convention and semaphore failures now compile in targeted probes, and the Phone graph no longer includes Crashpad. A ninth broad attempt is in progress. No `CoreWindow` display or device font path has been validated.
+- The cross-build still mixes Phone 8.1 headers/import libraries with a newer Visual C++ CRT. The Visual C++ 2013 Phone ARM libraries and signed `Microsoft.VCLibs` package were recovered from Microsoft's ISO but have not been integrated into a linked Chromium binary.
+- Phone AppContainer headers reserve IO completion ports for desktop code. `RegisterIOHandler` and `RegisterJobObject` return `ERROR_NOT_SUPPORTED` under WINUWP. Direct IO completion port consumers include Mojo's external channels, file streams, blockfile disk cache, serial IO, and an experimental TCP backend. The event based default TCP path and memory cache avoid those particular consumers, but a full navigation trace is still needed.
+- The Phone SDK reserves `CreateFileMapping`, `MapViewOfFile` and `UnmapViewOfFile` for desktop or PC apps. The immutable resource reader covers three startup consumers; other mappings and any cross-process shared buffer still have no Phone implementation. The process-local Mojo data-pipe ring has only an isolated test, so a real network response and the complete Mojo endpoint lifecycle remain unverified.
+- The native rendering window still assumes desktop window handles; `CoreWindow` display, touch input, fonts and GPU support need actual porting. There is no APPX packaging/signature or validated sideload path. The connected device was identified in read-only diagnostics as a **Lumia 920 RM-821**, despite the initial Lumia 925 description.
+- `--single-process` removes renderer isolation. The Phone port explicitly rejects child-process creation and disables protected-memory hardening, WebAssembly, TurboFan and Temporal. Battery and memory telemetry, version-resource inspection and ETW tracing are currently unavailable. The OS info adapter reports the Phone 8.1 API level, with a conservative single-processor value and no observed build number; these placeholders must be revisited before a release. Even if it starts, it will not have full compatibility with current sites.
 
-```text
-base/files/file_enumerator_win.cc
-base/memory/protected_memory_win.cc
-base/files/file_util_win.cc
-base/power_monitor/battery_level_provider_win.cc
-base/message_loop/message_pump_win.cc
-base/profiler/native_unwinder_win.cc
-base/profiler/win32_stack_frame_unwinder.cc
-base/process/launch_win.cc
-base/sync_socket_win.cc
-base/win/atl_throw.cc
-base/threading/platform_thread_win.cc
-base/win/access_control_list.cc
-base/time/time_win.cc
-base/win/access_token.cc
-```
-
-The build also still needs a Windows Phone application entry point, touch UI integration, packaging and signing, a compatible installation path, and device verification. The actual phone API surface and V8 snapshot behavior are unverified. No phone storage or firmware was modified.
-
-The V8 experiment disables WebAssembly, TurboFan, and Temporal support to reach the ARM32 host-tool build. These disabled features reduce website compatibility, even if a browser can eventually be installed.
+No phone storage or firmware was modified. The device has not executed any of these objects.

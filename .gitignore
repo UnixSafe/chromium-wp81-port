@@ -1,0 +1,12 @@
+# Build outputs and externally downloaded toolchains are never published.
+out/
+sdk/
+sysroot/
+toolchains/
+*.appx
+*.ffu
+*.dll
+*.exe
+*.obj
+*.log
+.DS_Store

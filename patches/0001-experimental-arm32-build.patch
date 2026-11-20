@@ -1,0 +1,1415 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index cdea26b..03b4019 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -88,7 +88,9 @@ if (is_official_build) {
+ group("gn_all") {
+   testonly = true
+ 
+-  if (is_cronet_build) {
++  if (target_os == "winuwp" && target_cpu == "arm") {
++    deps = [ "//chrome" ]
++  } else if (is_cronet_build) {
+     if (is_android) {
+       deps = [ "//components/cronet/android:cronet_package_android" ]
+     } else {
+@@ -864,14 +866,18 @@ group("gn_all") {
+ group("all_rust") {
+   testonly = true
+ 
+-  deps = [
+-    "//base:base_unittests",  # There is rust stuff in here.
+-    "//build/rust/tests",
+-    "//third_party/cloud_authenticator/processor",
+-  ]
++  if (target_os == "winuwp" && target_cpu == "arm") {
++    deps = []
++  } else {
++    deps = [
++      "//base:base_unittests",  # There is rust stuff in here.
++      "//build/rust/tests",
++      "//third_party/cloud_authenticator/processor",
++    ]
+ 
+-  if (!is_cronet_build) {
+-    deps += [ "//skia" ]
++    if (!is_cronet_build) {
++      deps += [ "//skia" ]
++    }
+   }
+ }
+ 
+@@ -949,7 +955,7 @@ if (is_fuchsia) {
+ 
+ # TODO(GYP_GONE): Figure out if we really need this target or if there's
+ # some better way to specify things.
+-if (is_win) {
++if (is_win && target_os != "winuwp") {
+   group("chrome_official_builder_no_unittests") {
+     deps = [
+       "//chrome/common/win:eventlog_provider",
+@@ -1553,8 +1559,10 @@ if (!running_modularize) {
+ 
+ group("chromium_builder_perf") {
+   testonly = true
++  data_deps = []
+ 
+-  if (!is_ios && !is_android && !is_castos && !is_cronet_build) {
++  if (!is_ios && !is_android && !is_castos && !is_cronet_build &&
++      target_os != "winuwp") {
+     data_deps = [
+       "//components/tracing:tracing_perftests",
+       "//gpu:command_buffer_perftests",
+@@ -1591,7 +1599,7 @@ group("chromium_builder_perf") {
+     data_deps += [ "//tools/perf/clear_system_cache" ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && target_os != "winuwp") {
+     data_deps += [
+       "//chrome/installer/mini_installer",
+       "//components:components_perftests",
+diff --git a/base/BUILD.gn b/base/BUILD.gn
+index 76fb572..9b0ca50 100644
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -4331,7 +4331,7 @@ test("base_unittests") {
+     "//testing/buildbot/filters:base_unittests_filters",
+   ]
+ 
+-  if (is_win || is_linux) {
++  if ((is_win || is_linux) && target_os != "winuwp") {
+     data_deps += [ "//base/allocator:system_allocator_test_helper" ]
+     sources += [ "allocator/system_allocator_unittest.cc" ]
+   }
+diff --git a/base/allocator/BUILD.gn b/base/allocator/BUILD.gn
+index f2e33bd..fa368c6 100644
+--- a/base/allocator/BUILD.gn
++++ b/base/allocator/BUILD.gn
+@@ -33,7 +33,7 @@ if (is_apple) {
+   }
+ }
+ 
+-if (is_win || is_linux) {
++if ((is_win || is_linux) && target_os != "winuwp") {
+   if (current_toolchain == default_system_allocator_toolchain) {
+     # This binary ends up in the 'system_allocator' build output directory.
+     executable("system_allocator_test_helper") {
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc
+index acfe215..5d1c23a 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc
+@@ -19,6 +19,14 @@ namespace partition_alloc::internal::base::debug {
+ namespace {
+ 
+ void PrintStackTraceInternal(const void** trace, size_t count) {
++#if defined(WINUWP)
++  for (size_t i = 0; i < count; ++i) {
++    char buffer[256];
++    strings::SafeSPrintf(buffer, "#%d 0x%x <unknown>\n", i,
++                         reinterpret_cast<uintptr_t>(PA_UNSAFE_TODO(trace[i])));
++    PA_RAW_LOG(INFO, buffer);
++  }
++#else
+   HANDLE process_handle = OpenProcess(
+       PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, GetCurrentProcId());
+   if (!process_handle) {
+@@ -94,6 +102,7 @@ void PrintStackTraceInternal(const void** trace, size_t count) {
+   }
+ 
+   CloseHandle(process_handle);
++#endif
+ }
+ 
+ }  // namespace
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/immediate_crash.h b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/immediate_crash.h
+index dae054a..7459ea2 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/immediate_crash.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/immediate_crash.h
+@@ -102,6 +102,11 @@
+ // https://crbug.com/958373
+ #define PA_TRAP_SEQUENCE2_() __asm volatile("")
+ 
++#elif PA_BUILDFLAG(PA_ARCH_CPU_ARMEL)
++
++#define PA_TRAP_SEQUENCE1_() asm volatile("bkpt #0")
++#define PA_TRAP_SEQUENCE2_() asm volatile("udf #0")
++
+ #else
+ 
+ #define PA_TRAP_SEQUENCE1_() asm volatile("int3")
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/logging.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/logging.cc
+index de50df4..531a65f 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/logging.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/logging.cc
+@@ -17,6 +17,8 @@
+ #include "partition_alloc/partition_alloc_base/debug/alias.h"
+ #include "partition_alloc/partition_alloc_base/immediate_crash.h"
+ 
++#include <cstring>
++
+ #if PA_BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ 
+@@ -54,6 +56,11 @@ void WriteToStderr(const char* data, size_t length) {
+     bytes_written += rv;
+   }
+ }
++#elif defined(WINUWP)
++void WriteToStderr(const char* data, size_t length) {
++  (void)length;
++  ::OutputDebugStringA(data);
++}
+ #else   // !PA_BUILDFLAG(IS_WIN)
+ void WriteToStderr(const char* data, size_t length) {
+   HANDLE handle = ::GetStdHandle(STD_ERROR_HANDLE);
+@@ -96,7 +103,7 @@ int GetVlogVerbosity() {
+ 
+ void RawLog(int level, const char* message) {
+   if (level >= g_min_log_level && message) {
+-#if !PA_BUILDFLAG(IS_WIN)
++#if !PA_BUILDFLAG(IS_WIN) || defined(WINUWP)
+     const size_t message_len = strlen(message);
+ #else   // !PA_BUILDFLAG(IS_WIN)
+     const size_t message_len = ::lstrlenA(message);
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc
+index 2156822..671ae3d 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc
+@@ -180,7 +180,11 @@ namespace {
+ // mock function, and to avoid a static constructor.  Assigning an import to a
+ // function pointer directly would require setup code to fetch from the IAT.
+ DWORD timeGetTimeWrapper() {
++#if defined(WINUWP)
++  return GetTickCount();
++#else
+   return timeGetTime();
++#endif
+ }
+ 
+ DWORD (*g_tick_function)(void) = &timeGetTimeWrapper;
+@@ -412,7 +416,7 @@ ThreadTicks ThreadTicks::GetForThread(
+     const PlatformThreadHandle& thread_handle) {
+   PA_BASE_DCHECK(IsSupported());
+ 
+-#if PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
++#if PA_BUILDFLAG(PA_ARCH_CPU_ARM64) || PA_BUILDFLAG(PA_ARCH_CPU_ARMEL)
+   // QueryThreadCycleTime versus TSCTicksPerSecond doesn't have much relation to
+   // actual elapsed time on Windows on Arm, because QueryThreadCycleTime is
+   // backed by the actual number of CPU cycles executed, rather than a
+@@ -447,7 +451,7 @@ ThreadTicks ThreadTicks::GetForThread(
+ 
+ // static
+ bool ThreadTicks::IsSupportedWin() {
+-#if PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
++#if PA_BUILDFLAG(PA_ARCH_CPU_ARM64) || PA_BUILDFLAG(PA_ARCH_CPU_ARMEL)
+   // The Arm implementation does not use QueryThreadCycleTime and therefore does
+   // not care about the time stamp counter.
+   return true;
+@@ -458,7 +462,7 @@ bool ThreadTicks::IsSupportedWin() {
+ 
+ // static
+ void ThreadTicks::WaitUntilInitializedWin() {
+-#if !PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
++#if !PA_BUILDFLAG(PA_ARCH_CPU_ARM64) && !PA_BUILDFLAG(PA_ARCH_CPU_ARMEL)
+   while (time_internal::TSCTicksPerSecond() == 0) {
+     ::Sleep(10);
+   }
+@@ -494,7 +498,7 @@ ABI::Windows::Foundation::DateTime TimeDelta::ToWinrtDateTime() const {
+   return date_time;
+ }
+ 
+-#if !PA_BUILDFLAG(PA_ARCH_CPU_ARM64)
++#if !PA_BUILDFLAG(PA_ARCH_CPU_ARM64) && !PA_BUILDFLAG(PA_ARCH_CPU_ARMEL)
+ namespace time_internal {
+ 
+ bool HasConstantRateTSC() {
+diff --git a/base/command_line.cc b/base/command_line.cc
+index d43d812..b6ae124 100644
+--- a/base/command_line.cc
++++ b/base/command_line.cc
+@@ -610,6 +610,53 @@ void CommandLine::ParseFromString(StringViewType command_line) {
+   }
+   raw_command_line_string_ = command_line;
+ 
++#if defined(WINUWP)
++  // CommandLineToArgvW lives in shell32, which is unavailable to phone apps.
++  StringVector argv;
++  size_t pos = 0;
++  while (pos < command_line.size()) {
++    while (pos < command_line.size() &&
++           (command_line[pos] == L' ' || command_line[pos] == L'\t')) {
++      ++pos;
++    }
++    if (pos == command_line.size()) {
++      break;
++    }
++    StringType arg;
++    bool quoted = false;
++    while (pos < command_line.size()) {
++      size_t slashes = 0;
++      while (pos < command_line.size() && command_line[pos] == L'\\') {
++        ++slashes;
++        ++pos;
++      }
++      if (pos < command_line.size() && command_line[pos] == L'"') {
++        arg.append(slashes / 2, L'\\');
++        if (slashes % 2) {
++          arg.push_back(L'"');
++        } else if (quoted && pos + 1 < command_line.size() &&
++                   command_line[pos + 1] == L'"') {
++          arg.push_back(L'"');
++          ++pos;
++        } else {
++          quoted = !quoted;
++        }
++        ++pos;
++        continue;
++      }
++      arg.append(slashes, L'\\');
++      if (pos == command_line.size() ||
++          (!quoted &&
++           (command_line[pos] == L' ' || command_line[pos] == L'\t'))) {
++        break;
++      }
++      arg.push_back(command_line[pos++]);
++    }
++    argv.push_back(std::move(arg));
++  }
++  InitFromArgv(argv);
++  raw_command_line_string_ = StringViewType();
++#else
+   int num_args = 0;
+   wchar_t** args = NULL;
+   // When calling CommandLineToArgvW, use the apiset if available.
+@@ -640,6 +687,7 @@ void CommandLine::ParseFromString(StringViewType command_line) {
+   if (downlevel_shell32_dll) {
+     ::FreeLibrary(downlevel_shell32_dll);
+   }
++#endif
+ }
+ 
+ #endif  // BUILDFLAG(IS_WIN)
+diff --git a/base/files/file_path.cc b/base/files/file_path.cc
+index 2398b4f..3ae2eb6 100644
+--- a/base/files/file_path.cc
++++ b/base/files/file_path.cc
+@@ -1018,6 +1018,13 @@ bool FilePath::ReadFromPickle(PickleIterator* iter) {
+ 
+ int FilePath::CompareIgnoreCase(StringViewType string1,
+                                 StringViewType string2) {
++#if defined(WINUWP)
++  const int result =
++      ::CompareStringOrdinal(string1.data(), static_cast<int>(string1.size()),
++                             string2.data(), static_cast<int>(string2.size()),
++                             TRUE);
++  return result == CSTR_LESS_THAN ? -1 : result == CSTR_GREATER_THAN ? 1 : 0;
++#else
+   // CharUpperW within user32 is used here because it will provide unicode
+   // conversions regardless of locale. The STL alternative, towupper, has a
+   // locale consideration that prevents it from converting all characters by
+@@ -1049,6 +1056,7 @@ int FilePath::CompareIgnoreCase(StringViewType string1,
+     return -1;
+   }
+   return 0;
++#endif
+ }
+ 
+ #elif BUILDFLAG(IS_APPLE)
+diff --git a/base/functional/bind_internal.h b/base/functional/bind_internal.h
+index eeb7d1e..b467ddf 100644
+--- a/base/functional/bind_internal.h
++++ b/base/functional/bind_internal.h
+@@ -678,7 +678,8 @@ template <typename R, typename... Args, typename... BoundArgs>
+ struct DecayedFunctorTraits<R (*)(Args...) noexcept, BoundArgs...>
+     : DecayedFunctorTraits<R (*)(Args...), BoundArgs...> {};
+ 
+-#if BUILDFLAG(IS_WIN) && !defined(ARCH_CPU_64_BITS)
++#if BUILDFLAG(IS_WIN) && !defined(ARCH_CPU_64_BITS) && \
++    !defined(ARCH_CPU_ARMEL)
+ 
+ // `__stdcall` and `__fastcall` functions.
+ #define BIND_INTERNAL_DECAYED_FUNCTOR_TRAITS_WITH_CONV_AND_QUALS(conv, quals) \
+@@ -764,7 +765,8 @@ BIND_INTERNAL_DECAYED_FUNCTOR_TRAITS_WITH_CONST_AND_QUALS(const, noexcept);
+ 
+ #undef BIND_INTERNAL_DECAYED_FUNCTOR_TRAITS_WITH_CONST_AND_QUALS
+ 
+-#if BUILDFLAG(IS_WIN) && !defined(ARCH_CPU_64_BITS)
++#if BUILDFLAG(IS_WIN) && !defined(ARCH_CPU_64_BITS) && \
++    !defined(ARCH_CPU_ARMEL)
+ 
+ // `__stdcall` methods.
+ #define BIND_INTERNAL_DECAYED_FUNCTOR_TRAITS_STDCALL_WITH_QUALS(quals)  \
+diff --git a/base/immediate_crash.h b/base/immediate_crash.h
+index 45ba381..ea217a3 100644
+--- a/base/immediate_crash.h
++++ b/base/immediate_crash.h
+@@ -119,6 +119,11 @@ extern "C" int __attribute__((weak)) __llvm_profile_write_file(void);
+ // https://crbug.com/958373
+ #define TRAP_SEQUENCE2_() __asm volatile("")
+ 
++#elif defined(ARCH_CPU_ARMEL)
++
++#define TRAP_SEQUENCE1_() asm volatile("bkpt #0")
++#define TRAP_SEQUENCE2_() asm volatile("udf #0")
++
+ #else
+ 
+ #define TRAP_SEQUENCE1_() asm volatile("int3")
+diff --git a/base/logging.cc b/base/logging.cc
+index b7221d7..afe17a6 100644
+--- a/base/logging.cc
++++ b/base/logging.cc
+@@ -341,6 +341,17 @@ bool InitializeLogFileHandle() {
+   }
+ 
+ #if BUILDFLAG(IS_WIN)
++#if defined(WINUWP)
++  CREATEFILE2_EXTENDED_PARAMETERS params = {
++      sizeof(CREATEFILE2_EXTENDED_PARAMETERS), FILE_ATTRIBUTE_NORMAL};
++  g_log_file = CreateFile2(g_log_file_name->c_str(), FILE_APPEND_DATA,
++                           FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_ALWAYS,
++                           &params);
++  if (g_log_file == INVALID_HANDLE_VALUE || g_log_file == nullptr) {
++    g_log_file = nullptr;
++    return false;
++  }
++#else
+   // The FILE_APPEND_DATA access mask ensures that the file is atomically
+   // appended to across accesses from multiple threads.
+   // https://msdn.microsoft.com/en-us/library/windows/desktop/aa364399(v=vs.85).aspx
+@@ -377,6 +388,7 @@ bool InitializeLogFileHandle() {
+       return false;
+     }
+   }
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+   g_log_file = fopen(g_log_file_name->c_str(), "a");
+   if (g_log_file == nullptr) {
+diff --git a/base/metrics/persistent_histogram_storage.cc b/base/metrics/persistent_histogram_storage.cc
+index 4475ed0..1f238c7 100644
+--- a/base/metrics/persistent_histogram_storage.cc
++++ b/base/metrics/persistent_histogram_storage.cc
+@@ -35,11 +35,13 @@ void* AllocateLocalMemory(size_t size) {
+   void* address;
+ 
+ #if BUILDFLAG(IS_WIN)
++#if !defined(WINUWP)
+   address =
+       ::VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+   if (address) {
+     return address;
+   }
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+   // MAP_ANON is deprecated on Linux but MAP_ANONYMOUS is not universal on Mac.
+   // MAP_SHARED is not available on Linux <2.4 but required on Mac.
+diff --git a/base/metrics/persistent_memory_allocator.cc b/base/metrics/persistent_memory_allocator.cc
+index 349060a..6e7bec8 100644
+--- a/base/metrics/persistent_memory_allocator.cc
++++ b/base/metrics/persistent_memory_allocator.cc
+@@ -1067,11 +1067,13 @@ LocalPersistentMemoryAllocator::AllocateLocalMemory(size_t size,
+   void* address;
+ 
+ #if BUILDFLAG(IS_WIN)
++#if !defined(WINUWP)
+   address =
+       ::VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+   if (address) {
+     return Memory(address, MEM_VIRTUAL);
+   }
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+   // MAP_ANON is deprecated on Linux but MAP_ANONYMOUS is not universal on Mac.
+   // MAP_SHARED is not available on Linux <2.4 but required on Mac.
+@@ -1112,8 +1114,13 @@ void LocalPersistentMemoryAllocator::DeallocateLocalMemory(void* memory,
+ 
+   DCHECK_EQ(MEM_VIRTUAL, type);
+ #if BUILDFLAG(IS_WIN)
++#if defined(WINUWP)
++  // Phone apps use the heap fallback above, never a virtual allocation.
++  DCHECK(false);
++#else
+   BOOL success = ::VirtualFree(memory, 0, MEM_RELEASE);
+   DCHECK(success);
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+   int result = ::munmap(memory, size);
+   DCHECK_EQ(0, result);
+diff --git a/base/process/memory.h b/base/process/memory.h
+index b8147f0..2af3326 100644
+--- a/base/process/memory.h
++++ b/base/process/memory.h
+@@ -58,7 +58,11 @@ bool ReleaseAddressSpaceReservation();
+ #if BUILDFLAG(IS_WIN)
+ namespace win {
+ 
++#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
+ using partition_alloc::win::kOomExceptionCode;
++#else
++inline constexpr unsigned long kOomExceptionCode = 0xe0000008;
++#endif
+ 
+ }  // namespace win
+ #endif
+diff --git a/base/win/pe_image.cc b/base/win/pe_image.cc
+index be011c9..fc83e71 100644
+--- a/base/win/pe_image.cc
++++ b/base/win/pe_image.cc
+@@ -9,6 +9,7 @@
+ 
+ #include <delayimp.h>
+ #include <stddef.h>
++#include <string.h>
+ 
+ #include <string>
+ 
+@@ -46,6 +47,14 @@ int StrCmpByByte(LPCSTR s1, LPCSTR s2) {
+           *reinterpret_cast<const unsigned char*>(s2));
+ }
+ 
++int CompareModuleNames(LPCSTR lhs, LPCSTR rhs) {
++#if defined(WINUWP)
++  return _stricmp(lhs, rhs);
++#else
++  return lstrcmpiA(lhs, rhs);
++#endif
++}
++
+ struct PdbInfo {
+   DWORD Signature;
+   GUID Guid;
+@@ -440,7 +449,7 @@ bool PEImage::EnumImportChunks(EnumImportChunksFunction callback,
+         reinterpret_cast<PIMAGE_THUNK_DATA>(RVAToAddr(import->FirstThunk));
+ 
+     if (target_module_name == nullptr ||
+-        (lstrcmpiA(module_name, target_module_name) == 0)) {
++        (CompareModuleNames(module_name, target_module_name) == 0)) {
+       if (!callback(*this, module_name, name_table, iat, cookie)) {
+         return false;
+       }
+@@ -530,7 +539,7 @@ bool PEImage::EnumDelayImportChunks(EnumDelayImportChunksFunction callback,
+     }
+ 
+     if (target_module_name == nullptr ||
+-        (lstrcmpiA(module_name, target_module_name) == 0)) {
++        (CompareModuleNames(module_name, target_module_name) == 0)) {
+       if (target_module_name) {
+         // Ensure all imports are properly loaded for the target module so that
+         // the callback is operating on a fully-realized set of imports.
+diff --git a/build/config/clang/BUILD.gn b/build/config/clang/BUILD.gn
+index f81d22c..99ea19b 100644
+--- a/build/config/clang/BUILD.gn
++++ b/build/config/clang/BUILD.gn
+@@ -201,6 +201,8 @@ template("clang_lib") {
+           _suffix = "-i386"
+         } else if (current_cpu == "arm64") {
+           _suffix = "-aarch64"
++        } else if (current_cpu == "arm") {
++          _suffix = "-armv7"
+         } else {
+           assert(false)  # Unhandled cpu type
+         }
+diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
+index 1edf103..bb15787 100644
+--- a/build/config/win/BUILD.gn
++++ b/build/config/win/BUILD.gn
+@@ -112,6 +112,8 @@ config("compiler") {
+       }
+     } else if (current_cpu == "arm64") {
+       cflags += [ "--target=aarch64-pc-windows" ]
++    } else if (current_cpu == "arm") {
++      cflags += [ "--target=armv7-pc-windows-msvc" ]
+     } else {
+       assert(false, "unknown current_cpu " + current_cpu)
+     }
+@@ -275,7 +277,9 @@ config("runtime_library") {
+     } else {
+       defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP" ]
+     }
+-    cflags_cc += [ "/EHsc" ]
++    if (target_winuwp_version != "8.1" || current_cpu != "arm") {
++      cflags_cc += [ "/EHsc" ]
++    }
+ 
+     # This warning is given because the linker cannot tell the difference
+     # between consuming WinRT APIs versus authoring WinRT within static
+@@ -288,7 +292,8 @@ config("runtime_library") {
+     if (target_winuwp_version == "10") {
+       defines += [ "WIN10=_WIN32_WINNT_WIN10" ]
+     } else if (target_winuwp_version == "8.1") {
+-      defines += [ "WIN8_1=_WIN32_WINNT_WINBLUE" ]
++      # WIN8_1 is also a Chromium enum member in windows_version.h.
++      defines += [ "WINUWP_8_1" ]
+     } else if (target_winuwp_version == "8.0") {
+       defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
+     }
+@@ -304,15 +309,23 @@ config("runtime_library") {
+ # Windows is available at runtime. Targets using these libraries need to
+ # manually override this config for their compiles.
+ config("winver") {
+-  defines = [
+-    "NTDDI_VERSION=NTDDI_WIN11_BR",
+-
+-    # We can't say `=_WIN32_WINNT_WIN10` here because some files do
+-    # `#if WINVER < 0x0600` without including windows.h before,
+-    # and then _WIN32_WINNT_WIN10 isn't yet known to be 0x0A00.
+-    "_WIN32_WINNT=0x0A00",
+-    "WINVER=0x0A00",
+-  ]
++  if (target_os == "winuwp" && target_winuwp_version == "8.1") {
++    defines = [
++      "NTDDI_VERSION=NTDDI_WINBLUE",
++      "_WIN32_WINNT=0x0603",
++      "WINVER=0x0603",
++    ]
++  } else {
++    defines = [
++      "NTDDI_VERSION=NTDDI_WIN11_BR",
++
++      # We can't say `=_WIN32_WINNT_WIN10` here because some files do
++      # `#if WINVER < 0x0600` without including windows.h before,
++      # and then _WIN32_WINNT_WIN10 isn't yet known to be 0x0A00.
++      "_WIN32_WINNT=0x0A00",
++      "WINVER=0x0A00",
++    ]
++  }
+ }
+ 
+ # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
+diff --git a/build/nocompile.gni b/build/nocompile.gni
+index cb65827..1f3c5a0 100644
+--- a/build/nocompile.gni
++++ b/build/nocompile.gni
+@@ -176,6 +176,8 @@ if (enable_nocompile_tests) {
+           win_toolchain_data = win_toolchain_data_x64
+         } else if (target_cpu == "arm64") {
+           win_toolchain_data = win_toolchain_data_arm64
++        } else if (target_cpu == "arm") {
++          win_toolchain_data = win_toolchain_data_arm
+         } else {
+           error("Unsupported target_cpu, add it to win_toolchain_data.gni")
+         }
+diff --git a/build/rust/allocator/immediate_crash.h b/build/rust/allocator/immediate_crash.h
+index 616f552..f0a96ec 100644
+--- a/build/rust/allocator/immediate_crash.h
++++ b/build/rust/allocator/immediate_crash.h
+@@ -104,6 +104,12 @@
+ // https://crbug.com/958373
+ #define TRAP_SEQUENCE2_() __asm volatile("")
+ 
++#elif defined(ARCH_CPU_ARMEL)
++
++// clang-cl targets Thumb on Windows ARM32.
++#define TRAP_SEQUENCE1_() asm volatile("bkpt #0")
++#define TRAP_SEQUENCE2_() asm volatile("udf #0")
++
+ #else
+ 
+ #define TRAP_SEQUENCE1_() asm volatile("int3")
+diff --git a/build/toolchain/win/BUILD.gn b/build/toolchain/win/BUILD.gn
+index 860b6af..b3518ce 100644
+--- a/build/toolchain/win/BUILD.gn
++++ b/build/toolchain/win/BUILD.gn
+@@ -50,6 +50,25 @@ if (target_cpu == "arm64") {
+   }
+ }
+ 
++# Venetium 0010: V8's snapshot toolchain for 32-bit ARM targets on an x64 host.
++# v8/gni/snapshot_toolchain.gni sends an arm V8 built on x64 to
++# //build/toolchain/win:clang_x86_v8_arm -- a 32-bit x86 host toolchain whose V8
++# generates ARM code and runs it in V8's own simulator (mksnapshot, torque and
++# the other generators). The Windows counterpart of Linux's
++# clang_v8_toolchain("clang_x86_v8_arm") in build/toolchain/linux/BUILD.gn:
++# win_toolchains() defines it with the same three companion toolchains that
++# Linux's gcc_toolchain() adds (_for_rust_host_build_tools,
++# _host_with_system_allocator, _with_system_allocator).
++if (host_cpu == "x64") {
++  win_toolchains("x86_v8_arm") {
++    toolchain_arch = "x86"
++    clang_toolchain_prefix = "clang_"
++    toolchain_args = {
++      v8_current_cpu = "arm"
++    }
++  }
++}
++
+ # WinUWP toolchains. Only define these when targeting them.
+ 
+ if (target_os == "winuwp") {
+@@ -75,6 +94,8 @@ if (target_os == "winuwp") {
+   msvc_toolchain("uwp_" + target_cpu) {
+     environment = "environment.store_" + target_cpu
+     cl = "\"${store_cpu_toolchain_data.vc_bin_dir}/cl.exe\""
++    sys_include_flags = store_cpu_toolchain_data.include_flags_imsvc
++    sys_lib_flags = store_cpu_toolchain_data.libpath_lldlink_flags
+     toolchain_args = {
+       current_os = "winuwp"
+       current_cpu = target_cpu
+diff --git a/build/toolchain/win/midl.gni b/build/toolchain/win/midl.gni
+index c906b63..2ba7aca 100644
+--- a/build/toolchain/win/midl.gni
++++ b/build/toolchain/win/midl.gni
+@@ -157,6 +157,9 @@ template("midl") {
+     } else if (current_cpu == "arm64") {
+       win_tool_arch = "environment.arm64"
+       idl_target_platform = "arm64"
++    } else if (current_cpu == "arm") {
++      win_tool_arch = "environment.arm"
++      idl_target_platform = "arm32"
+     } else {
+       assert(false, "Need environment for this arch")
+     }
+diff --git a/build/toolchain/win/setup_toolchain.py b/build/toolchain/win/setup_toolchain.py
+index 34be00a..3799c7e 100644
+--- a/build/toolchain/win/setup_toolchain.py
++++ b/build/toolchain/win/setup_toolchain.py
+@@ -21,7 +21,7 @@ import action_helpers
+ import gn_helpers
+ 
+ SCRIPT_DIR = os.path.dirname(__file__)
+-SDK_VERSION = '10.0.28000.0'
++SDK_VERSION = '10.0.22621.0'
+ MSVC_DIR = re.compile('^.*/VC/Tools/MSVC/[^/]+/include$')
+ WINDOWS_KITS_DIR = re.compile(r'^(.*/Windows Kits/\d+/Include/[^/]+)/.*')
+ 
+@@ -348,6 +348,7 @@ def main():
+     if (
+         bool(int(os.environ.get('DEPOT_TOOLS_WIN_TOOLCHAIN', 1)))
+         and win_sdk_path
++        and not os.environ.get('CHROMIUM_XWIN_SYSROOT')
+     ):
+         flags = ['/winsysroot' + relflag(toolchain_root)]
+         print(f'include_flags_imsvc = {ListToArgString(flags)}')
+@@ -362,6 +363,7 @@ def main():
+     if (
+         bool(int(os.environ.get('DEPOT_TOOLS_WIN_TOOLCHAIN', 1)))
+         and win_sdk_path
++        and not os.environ.get('CHROMIUM_XWIN_SYSROOT')
+     ):
+         flags = ['/winsysroot:' + relflag(toolchain_root)]
+         print(f'libpath_lldlink_flags = {ListToArgString(flags)}')
+diff --git a/build/toolchain/win/win_toolchain_data.gni b/build/toolchain/win/win_toolchain_data.gni
+index bcd7a5f..798899d 100644
+--- a/build/toolchain/win/win_toolchain_data.gni
++++ b/build/toolchain/win/win_toolchain_data.gni
+@@ -28,6 +28,19 @@ declare_args() {
+                     "environment.x64",
+                   ],
+                   "scope")
++  if (target_cpu == "arm" || host_cpu == "arm") {
++    win_toolchain_data_arm =
++        exec_script("//build/toolchain/win/setup_toolchain.py",
++                    [
++                      visual_studio_path,
++                      windows_sdk_path,
++                      visual_studio_runtime_dirs,
++                      "win",
++                      "arm",
++                      "environment.arm",
++                    ],
++                    "scope")
++  }
+   if (target_cpu == "arm64" || host_cpu == "arm64") {
+     win_toolchain_data_arm64 =
+         exec_script("//build/toolchain/win/setup_toolchain.py",
+@@ -49,6 +62,8 @@ if (current_cpu == "x86") {
+   current_win_toolchain_data = win_toolchain_data_x64
+ } else if (current_cpu == "arm64") {
+   current_win_toolchain_data = win_toolchain_data_arm64
++} else if (current_cpu == "arm") {
++  current_win_toolchain_data = win_toolchain_data_arm
+ } else {
+   assert(false,
+          "Unsupported cpu ${current_cpu}, add it to win_toolchain_data.gni")
+diff --git a/build/vs_toolchain.py b/build/vs_toolchain.py
+index 869b764..11d9593 100755
+--- a/build/vs_toolchain.py
++++ b/build/vs_toolchain.py
+@@ -60,7 +60,7 @@ from gn_helpers import ToGNString
+ #   Make sure any version numbers in the documentation match the code.
+ #
+ TOOLCHAIN_HASH = '3bfcb536c8'
+-SDK_VERSION = '10.0.28000.0'
++SDK_VERSION = '10.0.22621.0'
+ 
+ # Visual Studio versions are listed in descending order of priority.
+ # The first version is assumed by this script to be the one that is packaged,
+diff --git a/components/zucchini/BUILD.gn b/components/zucchini/BUILD.gn
+index 0b98a83..944def5 100644
+--- a/components/zucchini/BUILD.gn
++++ b/components/zucchini/BUILD.gn
+@@ -134,7 +134,8 @@ static_library("zucchini_io") {
+   }
+ }
+ 
+-if (is_win && current_toolchain == default_toolchain) {
++if (is_win && target_os != "winuwp" &&
++    current_toolchain == default_toolchain) {
+   # Redirect the default 'zucchini' target to the one built with the system
+   # allocator.
+   _toolchain =
+@@ -162,7 +163,8 @@ if (is_win && current_toolchain == default_toolchain) {
+   }
+ }
+ 
+-if (!is_win || current_toolchain != default_toolchain) {
++if (!is_win || target_os == "winuwp" ||
++    current_toolchain != default_toolchain) {
+   executable("zucchini") {
+     sources = [
+       "main_utils.cc",
+@@ -178,7 +180,7 @@ if (!is_win || current_toolchain != default_toolchain) {
+       "//base",
+     ]
+ 
+-    if (is_win) {
++    if (is_win && target_os != "winuwp") {
+       deps += [
+         ":zucchini_exe_version",
+         "//build/win:default_exe_manifest",
+@@ -187,7 +189,7 @@ if (!is_win || current_toolchain != default_toolchain) {
+   }
+ }
+ 
+-if (is_win) {
++if (is_win && target_os != "winuwp") {
+   process_version_rc_template("zucchini_exe_version") {
+     template_file = "zucchini_exe_version.rc.version"
+     output = "$target_gen_dir/zucchini_exe_version.rc"
+diff --git a/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc b/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc
+index 3887a92..3684537 100644
+--- a/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc
++++ b/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc
+@@ -43,6 +43,9 @@
+ #include <unistd.h>
+ #else
+ #include <windows.h>
++#if defined(WINUWP)
++#include <malloc.h>
++#endif
+ #endif
+ 
+ #ifdef __linux__
+@@ -438,7 +441,12 @@ bool LowLevelAlloc::DeleteArena(Arena *arena) {
+                    "empty arena has non-page-aligned block");
+     int munmap_result;
+ #ifdef _WIN32
++#if defined(WINUWP)
++    _aligned_free(region);
++    munmap_result = 1;
++#else
+     munmap_result = VirtualFree(region, 0, MEM_RELEASE);
++#endif
+     ABSL_RAW_CHECK(munmap_result != 0,
+                    "LowLevelAlloc::DeleteArena: VitualFree failed");
+ #else
+@@ -585,9 +593,14 @@ static void *DoAllocWithArena(size_t request, LowLevelAlloc::Arena *arena) {
+       size_t new_pages_size = RoundUp(req_rnd, arena->pagesize * 16);
+       void *new_pages;
+ #ifdef _WIN32
++#if defined(WINUWP)
++      new_pages = _aligned_malloc(new_pages_size, arena->pagesize);
++      ABSL_RAW_CHECK(new_pages != nullptr, "_aligned_malloc failed");
++#else
+       new_pages = VirtualAlloc(nullptr, new_pages_size,
+                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+       ABSL_RAW_CHECK(new_pages != nullptr, "VirtualAlloc failed");
++#endif
+ #else
+ #ifndef ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING
+       if ((arena->flags & LowLevelAlloc::kAsyncSignalSafe) != 0) {
+diff --git a/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_info.cc b/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_info.cc
+index 5cee53f..9782bd0 100644
+--- a/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_info.cc
++++ b/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_info.cc
+@@ -516,7 +516,9 @@ std::unique_ptr<ZoneInfoSource> FileZoneInfoSource::Open(
+   if (pos == name.size() || name[pos] != '/') {
+     const char* tzdir = "/usr/share/zoneinfo";
+     char* tzdir_env = nullptr;
+-#if defined(_MSC_VER)
++#if defined(WINUWP)
++    // Windows Runtime apps cannot read process environment variables.
++#elif defined(_MSC_VER)
+     _dupenv_s(&tzdir_env, nullptr, "TZDIR");
+ #else
+     tzdir_env = std::getenv("TZDIR");
+diff --git a/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_lookup.cc b/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_lookup.cc
+index d1078de..9c68ee1 100644
+--- a/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_lookup.cc
++++ b/third_party/abseil-cpp/absl/time/internal/cctz/src/time_zone_lookup.cc
+@@ -173,7 +173,9 @@ time_zone local_time_zone() {
+ 
+   // Allow ${TZ} to override to default zone.
+   char* tz_env = nullptr;
+-#if defined(_MSC_VER)
++#if defined(WINUWP)
++  // Windows Runtime apps have no process environment.
++#elif defined(_MSC_VER)
+   _dupenv_s(&tz_env, nullptr, "TZ");
+ #else
+   tz_env = std::getenv("TZ");
+@@ -187,7 +189,9 @@ time_zone local_time_zone() {
+   // allow ${LOCALTIME} to override the default name.
+   char* localtime_env = nullptr;
+   if (strcmp(zone, "localtime") == 0) {
+-#if defined(_MSC_VER)
++#if defined(WINUWP)
++    // Use the Windows time zone selected above.
++#elif defined(_MSC_VER)
+     // System-specific default is just "localtime".
+     _dupenv_s(&localtime_env, nullptr, "LOCALTIME");
+ #else
+diff --git a/third_party/angle/BUILD.gn b/third_party/angle/BUILD.gn
+index 5e8714b..ba30ba4 100644
+--- a/third_party/angle/BUILD.gn
++++ b/third_party/angle/BUILD.gn
+@@ -427,7 +427,7 @@ config("build_id_config") {
+   ldflags = [ "-Wl,--build-id" ]
+ }
+ 
+-_use_copy_compiler_dll = angle_has_build && is_win
++_use_copy_compiler_dll = angle_has_build && is_win && !angle_is_winuwp
+ 
+ if (_use_copy_compiler_dll) {
+   copy("copy_compiler_dll") {
+diff --git a/third_party/boringssl/BUILD.gn b/third_party/boringssl/BUILD.gn
+index f4e51bf..932b3aa 100644
+--- a/third_party/boringssl/BUILD.gn
++++ b/third_party/boringssl/BUILD.gn
+@@ -113,7 +113,7 @@ if (enable_rust) {
+   }
+ }
+ 
+-if (is_msan) {
++if (is_msan || (current_os == "winuwp" && current_cpu == "arm")) {
+   # MSan instrumentation is incompatible with assembly optimizations.
+   # BoringSSL's GAS-compatible assembly knows how to detect MSan, but the NASM
+   # assembly does not, so we check for MSan explicitly.
+diff --git a/third_party/boringssl/src/crypto/x509/by_dir.cc b/third_party/boringssl/src/crypto/x509/by_dir.cc
+index eeb7aa7..377d2c8 100644
+--- a/third_party/boringssl/src/crypto/x509/by_dir.cc
++++ b/third_party/boringssl/src/crypto/x509/by_dir.cc
+@@ -157,7 +157,11 @@ int dir_ctrl(X509_LOOKUP *ctx, int cmd, const char *argp, long argl,
+   switch (cmd) {
+     case X509_L_ADD_DIR:
+       if (argl == X509_FILETYPE_DEFAULT) {
++#if defined(WINUWP)
++        const char *dir = nullptr;
++#else
+         const char *dir = getenv(X509_get_default_cert_dir_env());
++#endif
+         if (!add_cert_dir(ld, dir ? dir : X509_get_default_cert_dir(),
+                           X509_FILETYPE_PEM)) {
+           OPENSSL_PUT_ERROR(X509, X509_R_LOADING_CERT_DIR);
+diff --git a/third_party/boringssl/src/crypto/x509/by_file.cc b/third_party/boringssl/src/crypto/x509/by_file.cc
+index 39de096..ebaa8f9 100644
+--- a/third_party/boringssl/src/crypto/x509/by_file.cc
++++ b/third_party/boringssl/src/crypto/x509/by_file.cc
+@@ -30,9 +30,13 @@ int by_file_ctrl(X509_LOOKUP *ctx, int cmd, const char *argp, long argl,
+   const char *file = argp;
+   int type = argl;
+   if (argl == X509_FILETYPE_DEFAULT) {
++#if defined(WINUWP)
++    file = X509_get_default_cert_file();
++#else
+     if ((file = getenv(X509_get_default_cert_file_env())) == nullptr) {
+       file = X509_get_default_cert_file();
+     }
++#endif
+     type = X509_FILETYPE_PEM;
+   }
+   if (X509_load_cert_crl_file(ctx, file, type) != 0) {
+diff --git a/third_party/perfetto/BUILD.gn b/third_party/perfetto/BUILD.gn
+index 611a282..850637a 100644
+--- a/third_party/perfetto/BUILD.gn
++++ b/third_party/perfetto/BUILD.gn
+@@ -345,22 +345,23 @@ if (build_with_chromium) {
+ 
+   # TODO(altimin): this is a temp workaround around very strange link failures
+   # on win-dbg-ng buildbot.
+-  if (!is_win) {
+-    libtrace_processor_target_type = "source_set"
+-  } else {
+-    libtrace_processor_target_type = "component"
+-  }
+-
+   # In Chromium, we want to ensure that we don't link dynamically against sqlite
+   # (as Chromium also uses a more restricted version of sqlite which is actually
+   # shipped to the users).
+   # source_set helps us to achieve that.
+-  target(libtrace_processor_target_type, "libtrace_processor") {
+-    public_configs = [ "gn:public_config" ]
+-    deps = [ "src/trace_processor:lib" ]
+-    configs -= [ "//build/config/compiler:chromium_code" ]  # nogncheck
+-    configs += [ "//build/config/compiler:no_chromium_code" ]  # nogncheck
+-    public_deps = [ "include/perfetto/trace_processor" ]
++  if (enable_perfetto_trace_processor) {
++    if (!is_win) {
++      libtrace_processor_target_type = "source_set"
++    } else {
++      libtrace_processor_target_type = "component"
++    }
++    target(libtrace_processor_target_type, "libtrace_processor") {
++      public_configs = [ "gn:public_config" ]
++      deps = [ "src/trace_processor:lib" ]
++      configs -= [ "//build/config/compiler:chromium_code" ]  # nogncheck
++      configs += [ "//build/config/compiler:no_chromium_code" ]  # nogncheck
++      public_deps = [ "include/perfetto/trace_processor" ]
++    }
+   }
+ 
+   component("perfetto_test_support") {
+diff --git a/third_party/perfetto/gn/perfetto.gni b/third_party/perfetto/gn/perfetto.gni
+index 91a7a5c..79dac96 100644
+--- a/third_party/perfetto/gn/perfetto.gni
++++ b/third_party/perfetto/gn/perfetto.gni
+@@ -113,7 +113,8 @@ if (!defined(perfetto_build_with_embedder)) {
+ # Controls whether the `libperfetto` target bundles the JSON export code in its
+ # dependencies. Can be overriden by embedders to reduce dependency bloat.
+ if (!defined(perfetto_libperfetto_includes_json)) {
+-  perfetto_libperfetto_includes_json = build_with_chromium && !is_nacl
++  perfetto_libperfetto_includes_json =
++      build_with_chromium && !is_nacl && current_os != "winuwp"
+ }
+ 
+ perfetto_build_standalone =
+diff --git a/third_party/perfetto/src/base/BUILD.gn b/third_party/perfetto/src/base/BUILD.gn
+index 28aba7b..bbf70b8 100644
+--- a/third_party/perfetto/src/base/BUILD.gn
++++ b/third_party/perfetto/src/base/BUILD.gn
+@@ -21,7 +21,8 @@ import("../../gn/wasm.gni")
+ # On standalone builds this is all the OSes we support. On chromium builds,
+ # though, this really means !is_fuchsia && !is_nacl.
+ _subprocess_supported =
+-    is_linux || is_chromeos || is_android || is_mac || is_win || is_freebsd
++    is_linux || is_chromeos || is_android || is_mac ||
++    (is_win && current_os != "winuwp") || is_freebsd
+ 
+ perfetto_component("base") {
+   deps = [
+@@ -75,6 +76,15 @@ perfetto_component("base") {
+     "weak_runner.cc",
+   ]
+ 
++  if (current_os == "winuwp") {
++    sources -= [
++      "paged_memory.cc",
++      "progress_reporter.cc",
++      "scoped_mmap.cc",
++      "temp_file.cc",
++    ]
++  }
++
+   if (!is_nacl) {
+     sources += [
+       "lock_free_task_runner.cc",
+diff --git a/third_party/perfetto/src/base/android_utils.cc b/third_party/perfetto/src/base/android_utils.cc
+index caa464b..d997da0 100644
+--- a/third_party/perfetto/src/base/android_utils.cc
++++ b/third_party/perfetto/src/base/android_utils.cc
+@@ -189,10 +189,12 @@ SystemInfo GetSystemInfo() {
+ }
+ 
+ std::string GetPerfettoMachineName() {
++#if !defined(WINUWP)
+   const char* env_name = getenv("PERFETTO_MACHINE_NAME");
+   if (env_name) {
+     return env_name;
+   }
++#endif
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
+   std::string name = base::GetAndroidProp("traced.machine_name");
+   if (name.empty()) {
+diff --git a/third_party/perfetto/src/base/atomic_file.cc b/third_party/perfetto/src/base/atomic_file.cc
+index 88501fc..7b59f12 100644
+--- a/third_party/perfetto/src/base/atomic_file.cc
++++ b/third_party/perfetto/src/base/atomic_file.cc
+@@ -24,6 +24,7 @@
+ #include "perfetto/base/compiler.h"
+ #include "perfetto/base/logging.h"
+ #include "perfetto/ext/base/file_utils.h"
++#include "perfetto/ext/base/string_utils.h"
+ #include "perfetto/ext/base/uuid.h"
+ 
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+@@ -49,15 +50,31 @@ AtomicFile::~AtomicFile() {
+ base::Status AtomicFile::Open() {
+   PERFETTO_CHECK(!fd_ && !owns_temp_file_);
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
++#if defined(WINUWP)
++  std::wstring wide_destination;
++  std::wstring wide_temp;
++  if (!UTF8ToWide(destination_, wide_destination) ||
++      !UTF8ToWide(temp_path_, wide_temp))
++    return base::ErrStatus("invalid UTF-8 output path");
++  DWORD attributes = GetFileAttributesW(wide_destination.c_str());
++#else
+   DWORD attributes = GetFileAttributesA(destination_.c_str());
++#endif
+   if (attributes != INVALID_FILE_ATTRIBUTES &&
+       (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+     return base::ErrStatus(
+         "output must be a regular file, not a directory or link");
++#if defined(WINUWP)
++  HANDLE handle = CreateFile2(
++      wide_temp.c_str(), GENERIC_READ | GENERIC_WRITE,
++      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, CREATE_NEW,
++      nullptr);
++#else
+   HANDLE handle =
+       CreateFileA(temp_path_.c_str(), GENERIC_READ | GENERIC_WRITE,
+                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                   nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
++#endif
+   if (handle == INVALID_HANDLE_VALUE)
+     return base::ErrStatus(
+         "cannot create temporary output beside '%s' (Windows error %lu)",
+@@ -100,8 +117,18 @@ base::Status AtomicFile::Commit() && {
+     return base::ErrStatus("failed to flush output: %s", strerror(errno));
+   fd_.reset();
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
++#if defined(WINUWP)
++  std::wstring wide_destination;
++  std::wstring wide_temp;
++  if (!UTF8ToWide(destination_, wide_destination) ||
++      !UTF8ToWide(temp_path_, wide_temp))
++    return base::ErrStatus("invalid UTF-8 output path");
++  if (!MoveFileExW(wide_temp.c_str(), wide_destination.c_str(),
++                   MOVEFILE_REPLACE_EXISTING))
++#else
+   if (!MoveFileExA(temp_path_.c_str(), destination_.c_str(),
+                    MOVEFILE_REPLACE_EXISTING))
++#endif
+     return base::ErrStatus("failed to publish '%s' (Windows error %lu)",
+                            destination_.c_str(), GetLastError());
+ #else
+diff --git a/third_party/perfetto/src/base/file_utils.cc b/third_party/perfetto/src/base/file_utils.cc
+index 79a9859..b30e83c 100644
+--- a/third_party/perfetto/src/base/file_utils.cc
++++ b/third_party/perfetto/src/base/file_utils.cc
+@@ -269,10 +269,12 @@ bool FlushFile(int fd) {
+ ScopedFile DupFile(int fd) {
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+   ScopedFile duplicate(_dup(fd));
++#if !defined(WINUWP)
+   if (duplicate && !SetHandleInformation(
+                        reinterpret_cast<HANDLE>(_get_osfhandle(*duplicate)),
+                        HANDLE_FLAG_INHERIT, 0))
+     return ScopedFile();
++#endif
+   return duplicate;
+ #else
+   return ScopedFile(fcntl(fd, F_DUPFD_CLOEXEC, 0));
+@@ -291,9 +293,19 @@ bool IsSameFile(const std::string& first, const std::string& second) {
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+   auto identity = [](const std::string& path,
+                      BY_HANDLE_FILE_INFORMATION* info) {
++#if defined(WINUWP)
++    auto wide_path = ToUtf16(path);
++    if (!wide_path)
++      return false;
++    ScopedPlatformHandle file(CreateFile2(
++        wide_path->c_str(), 0,
++        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING,
++        nullptr));
++#else
+     ScopedPlatformHandle file(CreateFileA(
+         path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
++#endif
+     return file && GetFileInformationByHandle(*file, info);
+   };
+   BY_HANDLE_FILE_INFORMATION a{}, b{};
+@@ -745,9 +757,18 @@ base::Status SetFilePermissions(const std::string& file_path,
+ std::optional<uint64_t> GetFileSize(const std::string& file_path) {
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+   // This does not use base::OpenFile to avoid getting an exclusive lock.
++#if defined(WINUWP)
++  auto wide_path = ToUtf16(file_path);
++  if (!wide_path)
++    return std::nullopt;
++  base::ScopedPlatformHandle fd(CreateFile2(
++      wide_path->c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
++      OPEN_EXISTING, nullptr));
++#else
+   base::ScopedPlatformHandle fd(
+       CreateFileA(file_path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
++#endif
+ #else
+   base::ScopedFile fd(base::OpenFile(file_path, O_RDONLY | O_CLOEXEC));
+ #endif
+diff --git a/third_party/perfetto/src/base/time.cc b/third_party/perfetto/src/base/time.cc
+index fbd9a23..b88e3e1 100644
+--- a/third_party/perfetto/src/base/time.cc
++++ b/third_party/perfetto/src/base/time.cc
+@@ -32,7 +32,7 @@ namespace perfetto {
+ namespace base {
+ 
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+-#if !PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64)
++#if !PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64) && !defined(_M_ARM)
+ namespace {
+ 
+ // Returns the current value of the performance counter.
+@@ -111,7 +111,7 @@ double TSCTicksPerSecond() {
+ }
+ 
+ }  // namespace
+-#endif  // !PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64)
++#endif  // !PERFETTO_ARCH_CPU_ARM64 && !_M_ARM
+ 
+ TimeNanos GetWallTimeNs() {
+   LARGE_INTEGER freq;
+@@ -124,7 +124,7 @@ TimeNanos GetWallTimeNs() {
+ }
+ 
+ TimeNanos GetThreadCPUTimeNs() {
+-#if PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64)
++#if PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64) || defined(_M_ARM)
+   // QueryThreadCycleTime versus TSCTicksPerSecond doesn't have much relation to
+   // actual elapsed time on Windows on Arm, because QueryThreadCycleTime is
+   // backed by the actual number of CPU cycles executed, rather than a
+@@ -168,7 +168,7 @@ void SleepMicroseconds(unsigned interval_us) {
+ }
+ 
+ void InitializeTime() {
+-#if !PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64)
++#if !PERFETTO_BUILDFLAG(PERFETTO_ARCH_CPU_ARM64) && !defined(_M_ARM)
+   // Make an early first call to TSCTicksPerSecond() to start 50 ms elapsed time
+   // (see comment in TSCTicksPerSecond()).
+   TSCTicksPerSecond();
+diff --git a/third_party/perfetto/src/base/utils.cc b/third_party/perfetto/src/base/utils.cc
+index 3b29647..e535464 100644
+--- a/third_party/perfetto/src/base/utils.cc
++++ b/third_party/perfetto/src/base/utils.cc
+@@ -163,7 +163,11 @@ uid_t GetCurrentUserId() {
+ }
+ 
+ void SetEnv(const std::string& key, const std::string& value) {
+-#if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
++#if defined(WINUWP)
++  (void)key;
++  (void)value;
++  PERFETTO_CHECK(false && "environment variables are unavailable on UWP");
++#elif PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+   PERFETTO_CHECK(::_putenv_s(key.c_str(), value.c_str()) == 0);
+ #else
+   PERFETTO_CHECK(::setenv(key.c_str(), value.c_str(), /*overwrite=*/true) == 0);
+@@ -171,7 +175,10 @@ void SetEnv(const std::string& key, const std::string& value) {
+ }
+ 
+ void UnsetEnv(const std::string& key) {
+-#if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
++#if defined(WINUWP)
++  (void)key;
++  PERFETTO_CHECK(false && "environment variables are unavailable on UWP");
++#elif PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+   PERFETTO_CHECK(::_putenv_s(key.c_str(), "") == 0);
+ #else
+   PERFETTO_CHECK(::unsetenv(key.c_str()) == 0);
+diff --git a/tools/perf/chrome_telemetry_build/BUILD.gn b/tools/perf/chrome_telemetry_build/BUILD.gn
+index f353476..7de9bb8 100644
+--- a/tools/perf/chrome_telemetry_build/BUILD.gn
++++ b/tools/perf/chrome_telemetry_build/BUILD.gn
+@@ -45,7 +45,7 @@ group("telemetry_chrome_test") {
+       ":host_trace_processor_shell",
+       "//third_party/perfetto/src/trace_processor:trace_processor_shell($host_toolchain)",
+     ]
+-  } else {
++  } else if (target_os != "winuwp") {
+     data_deps += [ "//third_party/perfetto/src/trace_processor:trace_processor_shell($default_toolchain)" ]
+   }
+ 
+diff --git a/v8/src/base/cpu/cpu-arm.cc b/v8/src/base/cpu/cpu-arm.cc
+index 4a29ee6..f86f2f1 100644
+--- a/v8/src/base/cpu/cpu-arm.cc
++++ b/v8/src/base/cpu/cpu-arm.cc
+@@ -324,6 +324,23 @@ void CPU::DetectFeatures() {
+   }
+   has_idiva_ = (cpu_flags & ARM_CPU_FLAG_IDIV) != 0;
+ 
++#elif V8_OS_WIN
++
++  // Windows on ARM (ARMNT) requires ARMv7-A with Thumb-2 and VFPv3. The OS
++  // reports the optional features: NEON, the 32-register VFP bank and hardware
++  // integer divide. Do not assume divide: it is absent on e.g. Cortex-A9.
++  architecture_ = 7;
++  has_thumb2_ = true;
++  has_fpu_ = true;
++  has_vfp_ = true;
++  has_vfp3_ = true;
++  has_neon_ = IsProcessorFeaturePresent(PF_ARM_NEON_INSTRUCTIONS_AVAILABLE);
++  has_vfp3_d32_ = IsProcessorFeaturePresent(PF_ARM_VFP_32_REGISTERS_AVAILABLE);
++  has_idiva_ = IsProcessorFeaturePresent(PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE);
++  if (IsProcessorFeaturePresent(PF_ARM_V8_INSTRUCTIONS_AVAILABLE)) {
++    architecture_ = 8;
++  }
++
+ #endif  // V8_OS_LINUX
+ #elif V8_HOST_ARCH_ARM64
+ #ifdef V8_OS_WIN
+diff --git a/v8/src/base/debug/stack_trace_win.cc b/v8/src/base/debug/stack_trace_win.cc
+index 7b3b430..1c5e023 100644
+--- a/v8/src/base/debug/stack_trace_win.cc
++++ b/v8/src/base/debug/stack_trace_win.cc
+@@ -213,6 +213,11 @@ void StackTrace::InitTrace(const CONTEXT* context_record) {
+ #else
+ #error Unsupported Arch
+ #endif
++#elif defined(_M_ARM)
++  int machine_type = IMAGE_FILE_MACHINE_ARMNT;
++  stack_frame.AddrPC.Offset = context_record->Pc;
++  stack_frame.AddrFrame.Offset = context_record->R11;
++  stack_frame.AddrStack.Offset = context_record->Sp;
+ #else
+   int machine_type = IMAGE_FILE_MACHINE_I386;
+   stack_frame.AddrPC.Offset = context_record->Eip;
+diff --git a/v8/src/base/platform/platform-win32.cc b/v8/src/base/platform/platform-win32.cc
+index 47c60a4..7a2813b 100644
+--- a/v8/src/base/platform/platform-win32.cc
++++ b/v8/src/base/platform/platform-win32.cc
+@@ -1712,6 +1712,18 @@ int OS::ActivationFrameAlignment() {
+ #endif
+ }
+ 
++#ifdef __arm__
++// Windows on ARM (ARMNT) passes floating-point arguments and results in VFP
++// registers (hard float); clang-cl reports that as __ARM_PCS_VFP. The POSIX,
++// QNX and Starboard definitions are not built on Windows. Answering wrongly
++// would silently corrupt floating-point calls, so fail the build rather than
++// guess when the compiler does not report the hard-float ABI.
++#if !defined(__ARM_PCS_VFP)
++#error "Windows ARM32 is expected to use the VFP hard-float ABI."
++#endif
++bool OS::ArmUsingHardFloat() { return true; }
++#endif  // __arm__
++
+ #if defined(V8_OS_WIN)
+ void EnsureConsoleOutputWin32() {
+   UINT new_flags =
+diff --git a/v8/src/codegen/arm/constants-arm.h b/v8/src/codegen/arm/constants-arm.h
+index 64446a0..11a1c96 100644
+--- a/v8/src/codegen/arm/constants-arm.h
++++ b/v8/src/codegen/arm/constants-arm.h
+@@ -14,8 +14,9 @@
+ #include "src/utils/boxed-float.h"
+ #include "src/utils/utils.h"
+ 
+-// ARM EABI is required.
+-#if defined(__arm__) && !defined(__ARM_EABI__)
++// ARM EABI is required. Windows on ARM (_M_ARM) follows the AAPCS VFP
++// (hard-float) calling convention, but clang-cl does not define __ARM_EABI__.
++#if defined(__arm__) && !defined(__ARM_EABI__) && !defined(_M_ARM)
+ #error ARM EABI support is required.
+ #endif
+ 
+diff --git a/v8/src/codegen/arm/cpu-arm.cc b/v8/src/codegen/arm/cpu-arm.cc
+index 6fc1dd9..007becb 100644
+--- a/v8/src/codegen/arm/cpu-arm.cc
++++ b/v8/src/codegen/arm/cpu-arm.cc
+@@ -12,6 +12,8 @@
+ #include <sys/types.h>
+ #elif V8_OS_STARBOARD
+ #define __ARM_NR_cacheflush 0x0f0002
++#elif defined(_WIN32)
++#include <windows.h>  // for FlushInstructionCache().
+ #else
+ #include <sys/syscall.h>  // for cache flushing.
+ #endif
+@@ -34,6 +36,8 @@ V8_NOINLINE void CpuFeatures::FlushICache(void* start, size_t size) {
+   struct arm_sync_icache_args args = {
+       .addr = reinterpret_cast<uintptr_t>(start), .len = size};
+   sysarch(ARM_SYNC_ICACHE, reinterpret_cast<void*>(&args));
++#elif V8_OS_WIN
++  ::FlushInstructionCache(GetCurrentProcess(), start, size);
+ #else
+   register uint32_t beg asm("r0") = reinterpret_cast<uint32_t>(start);
+   register uint32_t end asm("r1") = beg + size;
+diff --git a/v8/src/execution/isolate.cc b/v8/src/execution/isolate.cc
+index 98f08fa..ebd167a 100644
+--- a/v8/src/execution/isolate.cc
++++ b/v8/src/execution/isolate.cc
+@@ -202,7 +202,19 @@ namespace internal {
+ #endif
+ 
+ const uint8_t* DefaultEmbeddedBlobCode() {
++#if defined(V8_HOST_ARCH_ARM) && defined(V8_OS_WIN)
++  // The linker sets bit 0 (the Thumb bit) in the address of any symbol that
++  // lives in an executable section, so the raw address of the embedded blob is
++  // odd. The blob is A32 code: strip the bit so that every builtin entry point
++  // derived from it is even and runs in ARM state. This is keyed on the host
++  // architecture: isolate.cc also builds into the x86 mksnapshot, which has
++  // V8_TARGET_ARCH_ARM but an ordinary x86 data symbol here.
++  return reinterpret_cast<const uint8_t*>(
++      reinterpret_cast<uintptr_t>(v8_Default_embedded_blob_code_) &
++      ~uintptr_t{1});
++#else
+   return v8_Default_embedded_blob_code_;
++#endif
+ }
+ uint32_t DefaultEmbeddedBlobCodeSize() {
+   return v8_Default_embedded_blob_code_size_;
+diff --git a/v8/src/heap/base/asm/arm/push_registers_asm.cc b/v8/src/heap/base/asm/arm/push_registers_asm.cc
+index ccf0444..2ef9100 100644
+--- a/v8/src/heap/base/asm/arm/push_registers_asm.cc
++++ b/v8/src/heap/base/asm/arm/push_registers_asm.cc
+@@ -18,8 +18,10 @@
+ // https://en.wikipedia.org/wiki/Calling_convention#ARM_(A32)
+ // http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.faqs/ka4127.html
+ asm(".globl PushAllRegistersAndIterateStack             \n"
++#if !defined(_WIN32)
+     ".type PushAllRegistersAndIterateStack, %function   \n"
+     ".hidden PushAllRegistersAndIterateStack            \n"
++#endif  // !defined(_WIN32)
+     "PushAllRegistersAndIterateStack:                   \n"
+     // Push all callee-saved registers and save return address.
+     // Only {r4-r11} are callee-saved registers. Push r3 in addition to align
+@@ -37,9 +39,9 @@ asm(".globl PushAllRegistersAndIterateStack             \n"
+     "  add sp, sp, #36                                  \n"
+     // Pop lr into pc which returns and switches mode if needed.
+     "  pop {pc}                                         \n"
+-#if !defined(__APPLE__)
++#if !defined(__APPLE__) && !defined(_WIN32)
+     ".Lfunc_end0:                                       \n"
+     ".size PushAllRegistersAndIterateStack, "
+     ".Lfunc_end0-PushAllRegistersAndIterateStack\n"
+-#endif  // !defined(__APPLE__)
++#endif  // !defined(__APPLE__) && !defined(_WIN32)
+     );
+diff --git a/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc b/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc
+index 08adc77..ac42aa9 100644
+--- a/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc
++++ b/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc
+@@ -42,12 +42,19 @@ namespace internal {
+ // https://docs.microsoft.com/en-us/cpp/assembler/arm/arm-assembler-reference
+ 
+ // Name mangling.
+-// Symbols are prefixed with an underscore on 32-bit architectures.
++// Symbols are prefixed with an underscore on 32-bit architectures, except for
++// ARM32, whose COFF C symbols are undecorated. The ARM32 case is decided at run
++// time from the target architecture rather than from V8_TARGET_ARCH_ARM: the
++// mksnapshot that writes the ARM blob is an x86 binary built with
++// V8_TARGET_ARCH_ARM, and the same binary writes an x86 blob with
++// --target_arch=x86 (the x86 simulator build), which needs the underscore.
+ #if !defined(V8_TARGET_ARCH_X64) && !defined(V8_TARGET_ARCH_ARM64)
+-#define SYMBOL_PREFIX "_"
++#define SYMBOL_PREFIX_DEFAULT "_"
+ #else
+-#define SYMBOL_PREFIX ""
++#define SYMBOL_PREFIX_DEFAULT ""
+ #endif
++#define SYMBOL_PREFIX \
++  (target_arch_ == EmbeddedTargetArch::kArm ? "" : SYMBOL_PREFIX_DEFAULT)
+ 
+ // Notes:
+ //
+@@ -708,6 +715,7 @@ int PlatformEmbeddedFileWriterWin::WriteByteChunk(const uint8_t* data) {
+ }
+ 
+ #undef SYMBOL_PREFIX
++#undef SYMBOL_PREFIX_DEFAULT
+ #undef V8_ASSEMBLER_IS_MASM
+ #undef V8_ASSEMBLER_IS_MARMASM
+ #undef V8_COMPILER_IS_MSVC

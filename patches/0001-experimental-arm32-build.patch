@@ -14048,6 +14048,55 @@ index b0dfda5..92f71f2 100644
      mmap.reset();
      return false;
    }
+diff --git a/ui/gfx/BUILD.gn b/ui/gfx/BUILD.gn
+index 6275eea..763becd 100644
+--- a/ui/gfx/BUILD.gn
++++ b/ui/gfx/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/config/features.gni")
+ import("//build/config/ozone.gni")
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//device/vr/buildflags/buildflags.gni")
+ import("//gpu/vulkan/features.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+@@ -311,7 +312,25 @@ component("gfx") {
+     }
+   }
+ 
+-  if (is_win) {
++  if (current_os == "winuwp" && phone81_port) {
++    # CoreWindow does not expose GDI regions, HWNDs, desktop window managers,
++    # global hotkeys or D3D11.4 shared fences.
++    sources += [
++      "system_fonts_phone.cc",
++      "system_fonts_win.h",
++      "win/direct_write.cc",
++      "win/direct_write.h",
++      "win/get_elevation_icon.cc",
++      "win/phone_font_manager.cc",
++      "win/phone_font_manager.h",
++      "win/physical_size.cc",
++      "win/rendering_window_manager.cc",
++      "win/singleton_hwnd_hot_key_observer.cc",
++      "win/text_analysis_source.cc",
++      "win/text_analysis_source.h",
++    ]
++    libs = [ "dwrite.lib" ]
++  } else if (is_win) {
+     sources += [
+       "font_fallback_win.cc",
+       "font_fallback_win.h",
+@@ -399,7 +418,8 @@ component("gfx") {
+     public_deps += [ "//cc/paint" ]
+     deps += [ "//third_party/harfbuzz" ]
+ 
+-    if (is_android || is_fuchsia || is_ios) {
++    if (is_android || is_fuchsia || is_ios ||
++        (current_os == "winuwp" && phone81_port)) {
+       sources += [
+         "font_fallback_skia.cc",
+         "font_render_params_skia.cc",
 diff --git a/ui/gfx/animation/animation_win.cc b/ui/gfx/animation/animation_win.cc
 index ae172ae..4f5c1f8 100644
 --- a/ui/gfx/animation/animation_win.cc
@@ -14173,6 +14222,588 @@ index 7943893..5466f80 100644
    static DXGI_FORMAT GetDXGIFormat(const gfx::ColorSpace& color_space);
  
    static D3D11_VIDEO_PROCESSOR_COLOR_SPACE GetD3D11ColorSpace(
+diff --git a/ui/gfx/font_render_params_skia.cc b/ui/gfx/font_render_params_skia.cc
+index 80e3739..34b1421 100644
+--- a/ui/gfx/font_render_params_skia.cc
++++ b/ui/gfx/font_render_params_skia.cc
+@@ -41,6 +41,12 @@ FontRenderParams GetFontRenderParams(const FontRenderParamsQuery& query,
+   return params;
+ }
+ 
++#if defined(WINUWP_8_1)
++void ClearFontRenderParamsCache() {
++  // CoreWindow has no per-monitor ClearType registry settings to invalidate.
++}
++#endif
++
+ float GetFontRenderParamsDeviceScaleFactor() {
+   return device_scale_factor_;
+ }
+diff --git a/ui/gfx/scrollbar_size.cc b/ui/gfx/scrollbar_size.cc
+index 3ef5f4d..5fe2a00 100644
+--- a/ui/gfx/scrollbar_size.cc
++++ b/ui/gfx/scrollbar_size.cc
+@@ -7,14 +7,37 @@
+ #include "base/compiler_specific.h"
+ #include "build/build_config.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1)
++#include <windows.ui.viewmanagement.h>
++#include <wrl/client.h>
++
++#include <cmath>
++
++#include "base/win/core_winrt_util.h"
++#include "base/win/hstring_reference.h"
++#elif BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ #endif
+ 
+ namespace gfx {
+ 
+ int scrollbar_size() {
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1)
++  using Microsoft::WRL::ComPtr;
++  ComPtr<IInspectable> instance;
++  ComPtr<ABI::Windows::UI::ViewManagement::IUISettings> settings;
++  ABI::Windows::Foundation::Size size{};
++  if (SUCCEEDED(base::win::RoActivateInstance(
++          base::win::HStringReference(
++              RuntimeClass_Windows_UI_ViewManagement_UISettings)
++              .Get(),
++          &instance)) &&
++      SUCCEEDED(instance.As(&settings)) &&
++      SUCCEEDED(settings->get_ScrollBarSize(&size)) && size.Width > 0) {
++    return std::lround(size.Width);
++  }
++  return 15;
++#elif BUILDFLAG(IS_WIN)
+   return GetSystemMetrics(SM_CXVSCROLL);
+ #else
+   return 15;
+diff --git a/ui/gfx/system_fonts_phone.cc b/ui/gfx/system_fonts_phone.cc
+new file mode 100644
+index 0000000..b6436b1
+--- /dev/null
++++ b/ui/gfx/system_fonts_phone.cc
+@@ -0,0 +1,85 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <windows.ui.viewmanagement.h>
++#include <wrl/client.h>
++
++#include <algorithm>
++#include <cmath>
++#include <optional>
++
++#include "base/check.h"
++#include "base/no_destructor.h"
++#include "base/numerics/safe_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/win/core_winrt_util.h"
++#include "base/win/hstring_reference.h"
++#include "ui/gfx/system_fonts_win.h"
++
++namespace gfx::win {
++namespace {
++AdjustFontCallback font_callback = nullptr;
++GetMinimumFontSizeCallback minimum_callback = nullptr;
++std::optional<Font>& CachedFont() {
++  static base::NoDestructor<std::optional<Font>> cached;
++  return *cached;
++}
++double TextScale() {
++  using Microsoft::WRL::ComPtr;
++  ComPtr<IInspectable> instance;
++  ComPtr<ABI::Windows::UI::ViewManagement::IUISettings2> settings;
++  double scale;
++  if (SUCCEEDED(base::win::RoActivateInstance(
++          base::win::HStringReference(
++              RuntimeClass_Windows_UI_ViewManagement_UISettings)
++              .Get(),
++          &instance)) &&
++      SUCCEEDED(instance.As(&settings)) &&
++      SUCCEEDED(settings->get_TextScaleFactor(&scale)) &&
++      std::isfinite(scale) && scale > 0) {
++    return scale;
++  }
++  return 1.;
++}
++}  // namespace
++int AdjustFontSize(int height, int delta) {
++  int adjusted = std::max(minimum_callback ? minimum_callback() : 0,
++                          std::abs(height) + delta);
++  return height < 0 ? -adjusted : adjusted;
++}
++void SetGetMinimumFontSizeCallback(GetMinimumFontSizeCallback callback) {
++  DCHECK(!CachedFont());
++  minimum_callback = callback;
++}
++void SetAdjustFontCallback(AdjustFontCallback callback) {
++  DCHECK(!CachedFont());
++  font_callback = callback;
++}
++const Font& GetDefaultSystemFont() {
++  auto& cached = CachedFont();
++  if (!cached) {
++    FontAdjustment adjustment;
++    adjustment.font_scale = TextScale();
++    if (font_callback) {
++      font_callback(adjustment);
++    }
++    int size = std::max(
++        1, AdjustFontSize(base::ClampRound(14. * adjustment.font_scale), 0));
++    cached.emplace(adjustment.font_family_override.empty()
++                       ? "Segoe WP"
++                       : base::WideToUTF8(adjustment.font_family_override),
++                   size);
++  }
++  return *cached;
++}
++const Font& GetSystemFont(SystemFont) {
++  // Phone has one shell UI family and no NONCLIENTMETRICS roles.
++  return GetDefaultSystemFont();
++}
++void ResetSystemFontsForTesting() {
++  CachedFont().reset();
++  minimum_callback = nullptr;
++  font_callback = nullptr;
++}
++}  // namespace gfx::win
+diff --git a/ui/gfx/win/direct_write.cc b/ui/gfx/win/direct_write.cc
+index 83a9552..d188633 100644
+--- a/ui/gfx/win/direct_write.cc
++++ b/ui/gfx/win/direct_write.cc
+@@ -5,9 +5,10 @@
+ #include "ui/gfx/win/direct_write.h"
+ 
+ #include <dwrite.h>
++#if !defined(WINUWP_8_1)
+ #include <dwrite_2.h>
+ #include <dwrite_3.h>
+-#include <wrl.h>
++#endif
+ #include <wrl/client.h>
+ 
+ #include <string>
+@@ -19,7 +20,11 @@
+ #include "base/trace_event/trace_event.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/skia/include/core/SkFontMgr.h"
++#if defined(WINUWP_8_1)
++#include "ui/gfx/win/phone_font_manager.h"
++#else
+ #include "third_party/skia/include/ports/SkTypeface_win.h"
++#endif
+ 
+ namespace gfx {
+ namespace win {
+@@ -33,6 +38,7 @@ IDWriteFactory* g_direct_write_factory = nullptr;
+ // font. Usually this is the Ahem.ttf font. Leaked at shutdown.
+ std::vector<base::FilePath>* g_sideloaded_fonts = nullptr;
+ 
++#if !defined(WINUWP_8_1)
+ bool GetFontCollection(Microsoft::WRL::ComPtr<IDWriteFactory>& factory,
+                        IDWriteFontCollection** collection) {
+   if (!g_sideloaded_fonts) {
+@@ -106,6 +112,8 @@ bool GetFontCollection(Microsoft::WRL::ComPtr<IDWriteFactory>& factory,
+   return true;
+ }
+ 
++#endif
++
+ void SetDirectWriteFactory(IDWriteFactory* factory) {
+   DCHECK(!g_direct_write_factory);
+   // We grab a reference on the DirectWrite factory. This reference is
+@@ -152,6 +160,10 @@ void InitializeDirectWrite() {
+   CHECK(!!factory);
+   SetDirectWriteFactory(factory.Get());
+ 
++#if defined(WINUWP_8_1)
++  CHECK(!g_sideloaded_fonts) << "Test font sideloading requires DirectWrite 3";
++  sk_sp<SkFontMgr> direct_write_font_mgr = CreatePhoneFontManager(factory.Get());
++#else
+   // Get a font collection that contains sideloaded fonts for web tests, or
+   // nullptr to tell the DirectWrite FontMgr to use the system font collection.
+   // SkFontMgr_DirectWrite increments this object's ref count.
+@@ -165,6 +177,7 @@ void InitializeDirectWrite() {
+ 
+   sk_sp<SkFontMgr> direct_write_font_mgr = SkFontMgr_New_DirectWrite(
+       factory.Get(), should_use_collection ? collection.Get() : nullptr);
++#endif
+   CHECK(!!direct_write_font_mgr);
+ 
+   // Override the default skia font manager. This must be called before any
+diff --git a/ui/gfx/win/get_elevation_icon.cc b/ui/gfx/win/get_elevation_icon.cc
+index e255574..738ac44 100644
+--- a/ui/gfx/win/get_elevation_icon.cc
++++ b/ui/gfx/win/get_elevation_icon.cc
+@@ -4,6 +4,14 @@
+ 
+ #include "ui/gfx/win/get_elevation_icon.h"
+ 
++#if defined(WINUWP_8_1)
++namespace gfx::win {
++SkBitmap GetElevationIcon() {
++  // A Phone app cannot elevate.
++  return {};
++}
++}  // namespace gfx::win
++#else
+ #include <windows.h>
+ 
+ #include <shellapi.h>
+@@ -36,3 +44,4 @@ SkBitmap GetElevationIcon() {
+ }
+ 
+ }  // namespace gfx::win
++#endif  // defined(WINUWP_8_1)
+diff --git a/ui/gfx/win/phone_font_manager.cc b/ui/gfx/win/phone_font_manager.cc
+new file mode 100644
+index 0000000..d63d5ec
+--- /dev/null
++++ b/ui/gfx/win/phone_font_manager.cc
+@@ -0,0 +1,213 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/gfx/win/phone_font_manager.h"
++
++#include <wrl/client.h>
++
++#include <limits>
++#include <utility>
++
++#include "base/strings/utf_string_conversions.h"
++#include "third_party/skia/include/core/SkData.h"
++#include "third_party/skia/include/core/SkStream.h"
++#include "third_party/skia/include/core/SkString.h"
++#include "third_party/skia/include/core/SkTypeface.h"
++#include "third_party/skia/include/ports/SkFontMgr_Fontations.h"
++#include "ui/gfx/win/direct_write.h"
++
++namespace gfx::win {
++namespace {
++using Microsoft::WRL::ComPtr;
++
++// Keep the DirectWrite fragment valid until Fontations releases the font.
++struct Fragment {
++  ComPtr<IDWriteFontFileStream> stream;
++  void* token;
++  ~Fragment() { stream->ReleaseFileFragment(token); }
++};
++
++sk_sp<SkTypeface> Open(IDWriteFont* font, SkFontMgr* decoder) {
++  ComPtr<IDWriteFontFace> face;
++  UINT32 count = 0;
++  if (FAILED(font->CreateFontFace(&face)) ||
++      FAILED(face->GetFiles(&count, nullptr)) || count != 1) {
++    return nullptr;
++  }
++  ComPtr<IDWriteFontFile> file;
++  if (FAILED(face->GetFiles(&count, file.GetAddressOf()))) {
++    return nullptr;
++  }
++  const void* key;
++  UINT32 key_size;
++  ComPtr<IDWriteFontFileLoader> loader;
++  ComPtr<IDWriteFontFileStream> stream;
++  UINT64 size;
++  if (FAILED(file->GetReferenceKey(&key, &key_size)) ||
++      FAILED(file->GetLoader(&loader)) ||
++      FAILED(loader->CreateStreamFromKey(key, key_size, &stream)) ||
++      FAILED(stream->GetFileSize(&size)) || !size ||
++      size > std::numeric_limits<size_t>::max()) {
++    return nullptr;
++  }
++  const void* data;
++  void* token;
++  if (FAILED(stream->ReadFileFragment(&data, 0, size, &token))) {
++    return nullptr;
++  }
++  auto bytes = SkData::MakeWithProc(
++      data, static_cast<size_t>(size),
++      [](const void*, void* ctx) { delete static_cast<Fragment*>(ctx); },
++      new Fragment{std::move(stream), token});
++  return decoder->makeFromData(std::move(bytes), face->GetIndex());
++}
++
++class Styles final : public SkFontStyleSet {
++ public:
++  Styles(ComPtr<IDWriteFontFamily> family, sk_sp<SkFontMgr> decoder)
++      : family_(std::move(family)), decoder_(std::move(decoder)) {}
++  int count() override { return family_->GetFontCount(); }
++  void getStyle(int i, SkFontStyle* style, SkString* name) override {
++    ComPtr<IDWriteFont> font;
++    if (FAILED(family_->GetFont(i, &font))) {
++      return;
++    }
++    if (style) {
++      auto slant = font->GetStyle();
++      *style = SkFontStyle(
++          font->GetWeight(), font->GetStretch(),
++          slant == DWRITE_FONT_STYLE_NORMAL   ? SkFontStyle::kUpright_Slant
++          : slant == DWRITE_FONT_STYLE_ITALIC ? SkFontStyle::kItalic_Slant
++                                              : SkFontStyle::kOblique_Slant);
++    }
++    ComPtr<IDWriteLocalizedStrings> names;
++    if (name && SUCCEEDED(font->GetFaceNames(&names))) {
++      name->set(RetrieveLocalizedString(names.Get(), "").value_or("").c_str());
++    }
++  }
++  sk_sp<SkTypeface> createTypeface(int i) override {
++    ComPtr<IDWriteFont> font;
++    return SUCCEEDED(family_->GetFont(i, &font))
++               ? Open(font.Get(), decoder_.get())
++               : nullptr;
++  }
++  sk_sp<SkTypeface> matchStyle(const SkFontStyle& style) override {
++    return matchStyleCSS3(style);
++  }
++
++ private:
++  ComPtr<IDWriteFontFamily> family_;
++  sk_sp<SkFontMgr> decoder_;
++};
++
++class Manager final : public SkFontMgr {
++ public:
++  explicit Manager(ComPtr<IDWriteFontCollection> collection)
++      : collection_(std::move(collection)),
++        decoder_(SkFontMgr_New_Fontations_Empty()) {}
++
++ private:
++  int onCountFamilies() const override {
++    return collection_->GetFontFamilyCount();
++  }
++  void onGetFamilyName(int i, SkString* name) const override {
++    ComPtr<IDWriteFontFamily> family;
++    ComPtr<IDWriteLocalizedStrings> names;
++    if (SUCCEEDED(collection_->GetFontFamily(i, &family)) &&
++        SUCCEEDED(family->GetFamilyNames(&names))) {
++      name->set(RetrieveLocalizedString(names.Get(), "").value_or("").c_str());
++    }
++  }
++  sk_sp<SkFontStyleSet> onCreateStyleSet(int i) const override {
++    ComPtr<IDWriteFontFamily> family;
++    if (FAILED(collection_->GetFontFamily(i, &family))) {
++      return nullptr;
++    }
++    return sk_make_sp<Styles>(std::move(family), decoder_);
++  }
++  sk_sp<SkFontStyleSet> onMatchFamily(const char* name) const override {
++    UINT32 index;
++    BOOL exists;
++    auto wide = base::UTF8ToWide(name ? name : "Segoe WP");
++    if (FAILED(collection_->FindFamilyName(wide.c_str(), &index, &exists)) ||
++        !exists) {
++      if (name || !onCountFamilies()) {
++        return nullptr;
++      }
++      index = 0;
++    }
++    return onCreateStyleSet(index);
++  }
++  sk_sp<SkTypeface> onMatchFamilyStyle(
++      const char* name,
++      const SkFontStyle& style) const override {
++    auto set = onMatchFamily(name);
++    return set ? set->matchStyle(style) : nullptr;
++  }
++  sk_sp<SkTypeface> onMatchFamilyStyleCharacter(const char* name,
++                                                const SkFontStyle& style,
++                                                const char*[],
++                                                int,
++                                                SkUnichar ch) const override {
++    auto preferred = onMatchFamilyStyle(name, style);
++    if (preferred && preferred->unicharToGlyph(ch)) {
++      return preferred;
++    }
++    for (int i = 0; i < onCountFamilies(); ++i) {
++      ComPtr<IDWriteFontFamily> family;
++      ComPtr<IDWriteFont> font;
++      BOOL supported = false;
++      auto slant = style.slant() == SkFontStyle::kItalic_Slant
++                       ? DWRITE_FONT_STYLE_ITALIC
++                   : style.slant() == SkFontStyle::kOblique_Slant
++                       ? DWRITE_FONT_STYLE_OBLIQUE
++                       : DWRITE_FONT_STYLE_NORMAL;
++      if (SUCCEEDED(collection_->GetFontFamily(i, &family)) &&
++          SUCCEEDED(family->GetFirstMatchingFont(
++              static_cast<DWRITE_FONT_WEIGHT>(style.weight()),
++              static_cast<DWRITE_FONT_STRETCH>(style.width()), slant, &font)) &&
++          SUCCEEDED(font->HasCharacter(ch, &supported)) && supported) {
++        auto face = Open(font.Get(), decoder_.get());
++        if (face && face->unicharToGlyph(ch)) {
++          return face;
++        }
++      }
++    }
++    return nullptr;
++  }
++  sk_sp<SkTypeface> onMakeFromData(sk_sp<SkData> data,
++                                   int index) const override {
++    return decoder_->makeFromData(std::move(data), index);
++  }
++  sk_sp<SkTypeface> onMakeFromStreamIndex(std::unique_ptr<SkStreamAsset> data,
++                                          int index) const override {
++    return decoder_->makeFromStream(std::move(data), index);
++  }
++  sk_sp<SkTypeface> onMakeFromStreamArgs(
++      std::unique_ptr<SkStreamAsset> data,
++      const SkFontArguments& args) const override {
++    return decoder_->makeFromStream(std::move(data), args);
++  }
++  sk_sp<SkTypeface> onMakeFromFile(const char* path, int index) const override {
++    return decoder_->makeFromFile(path, index);
++  }
++  sk_sp<SkTypeface> onLegacyMakeTypeface(const char* name,
++                                         SkFontStyle style) const override {
++    auto face = onMatchFamilyStyle(name, style);
++    return !face && name ? onMatchFamilyStyle(nullptr, style) : face;
++  }
++  ComPtr<IDWriteFontCollection> collection_;
++  sk_sp<SkFontMgr> decoder_;
++};
++}  // namespace
++
++sk_sp<SkFontMgr> CreatePhoneFontManager(IDWriteFactory* factory) {
++  ComPtr<IDWriteFontCollection> collection;
++  if (FAILED(factory->GetSystemFontCollection(&collection)) ||
++      !collection->GetFontFamilyCount()) {
++    return nullptr;
++  }
++  return sk_make_sp<Manager>(std::move(collection));
++}
++}  // namespace gfx::win
+diff --git a/ui/gfx/win/phone_font_manager.h b/ui/gfx/win/phone_font_manager.h
+new file mode 100644
+index 0000000..c9f88db
+--- /dev/null
++++ b/ui/gfx/win/phone_font_manager.h
+@@ -0,0 +1,15 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef UI_GFX_WIN_PHONE_FONT_MANAGER_H_
++#define UI_GFX_WIN_PHONE_FONT_MANAGER_H_
++
++#include <dwrite.h>
++
++#include "third_party/skia/include/core/SkFontMgr.h"
++
++namespace gfx::win {
++sk_sp<SkFontMgr> CreatePhoneFontManager(IDWriteFactory* factory);
++}
++#endif
+diff --git a/ui/gfx/win/physical_size.cc b/ui/gfx/win/physical_size.cc
+index f268dc2..c2154fa 100644
+--- a/ui/gfx/win/physical_size.cc
++++ b/ui/gfx/win/physical_size.cc
+@@ -4,6 +4,14 @@
+ 
+ #include "ui/gfx/win/physical_size.h"
+ 
++#if defined(WINUWP_8_1)
++namespace gfx {
++std::vector<PhysicalDisplaySize> GetPhysicalSizeForDisplays() {
++  // Phone does not expose a collection of physical display panels or EDIDs.
++  return {};
++}
++}  // namespace gfx
++#else
+ #include <windows.h>
+ 
+ #include <setupapi.h>
+@@ -173,3 +181,4 @@ std::vector<PhysicalDisplaySize> GetPhysicalSizeForDisplays() {
+ }
+ 
+ }  // namespace gfx
++#endif  // defined(WINUWP_8_1)
+diff --git a/ui/gfx/win/rendering_window_manager.cc b/ui/gfx/win/rendering_window_manager.cc
+index 52e8bdd..1f06193 100644
+--- a/ui/gfx/win/rendering_window_manager.cc
++++ b/ui/gfx/win/rendering_window_manager.cc
+@@ -25,6 +25,10 @@ void RenderingWindowManager::RegisterParent(HWND parent) {
+ void RenderingWindowManager::RegisterChild(HWND parent,
+                                            HWND child,
+                                            DWORD expected_child_process_id) {
++#if defined(WINUWP_8_1)
++  // CoreWindow is the sole swap-chain target. Reject child HWND registration.
++  return;
++#else
+   if (!child)
+     return;
+ 
+@@ -56,6 +60,7 @@ void RenderingWindowManager::RegisterChild(HWND parent,
+   ::SetParent(child, parent);
+   // Move D3D window behind Chrome's window to avoid losing some messages.
+   ::SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
++#endif
+ }
+ 
+ void RenderingWindowManager::UnregisterParent(HWND parent) {
+@@ -65,10 +70,14 @@ void RenderingWindowManager::UnregisterParent(HWND parent) {
+ 
+ bool RenderingWindowManager::HasValidChildWindow(HWND parent) {
+   DCHECK(task_runner_->BelongsToCurrentThread());
++#if defined(WINUWP_8_1)
++  return false;
++#else
+   auto it = registered_hwnds_.find(parent);
+   if (it == registered_hwnds_.end())
+     return false;
+   return !!it->second && ::IsWindow(it->second);
++#endif
+ }
+ 
+ RenderingWindowManager::RenderingWindowManager()
+diff --git a/ui/gfx/win/singleton_hwnd_hot_key_observer.cc b/ui/gfx/win/singleton_hwnd_hot_key_observer.cc
+index f517ed1..c774141 100644
+--- a/ui/gfx/win/singleton_hwnd_hot_key_observer.cc
++++ b/ui/gfx/win/singleton_hwnd_hot_key_observer.cc
+@@ -14,6 +14,16 @@
+ #include "base/no_destructor.h"
+ #include "ui/gfx/win/singleton_hwnd.h"
+ 
++#if defined(WINUWP_8_1)
++namespace gfx {
++std::unique_ptr<SingletonHwndHotKeyObserver> SingletonHwndHotKeyObserver::Create(
++    const WndProc&, UINT, int) {
++  // CoreWindow keyboard events are local to the foreground application.
++  return nullptr;
++}
++SingletonHwndHotKeyObserver::~SingletonHwndHotKeyObserver() = default;
++}  // namespace gfx
++#else
+ namespace gfx {
+ 
+ namespace {
+@@ -96,3 +106,4 @@ void SingletonHwndHotKeyObserver::OnWndProc(HWND hwnd,
+ }
+ 
+ }  // namespace gfx
++#endif
+diff --git a/ui/gfx/win/text_analysis_source.h b/ui/gfx/win/text_analysis_source.h
+index 6497acc..5da2644 100644
+--- a/ui/gfx/win/text_analysis_source.h
++++ b/ui/gfx/win/text_analysis_source.h
+@@ -6,7 +6,8 @@
+ #define UI_GFX_WIN_TEXT_ANALYSIS_SOURCE_H_
+ 
+ #include <dwrite.h>
+-#include <wrl.h>
++#include <wrl/client.h>
++#include <wrl/implements.h>
+ 
+ #include <string>
+ 
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..c677108 100644
 --- a/v8/BUILD.gn

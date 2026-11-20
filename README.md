@@ -20,6 +20,6 @@ Chromium's source is distributed under its BSD-style license, included in [LICEN
 
 As of 20 November 2026, the ARM32 Windows configuration generates with GN. A Linux x86 host build produced V8's `mksnapshot`; it generated a Windows ARM32 snapshot, and Clang assembled its embedded output as an ARMv7 COFF object. Ninja ran eight jobs in parallel. This validates build steps, not the snapshot's behavior on the phone.
 
-The Chromium `base` library still has twelve failing Windows Phone source files, including file access, message dispatch, process launch, battery reporting, and profiling. There is no linked browser, phone package, or on-device navigation test. No firmware was flashed or written during this work. The experimental V8 configuration also disables WebAssembly, which limits modern-site compatibility.
+The Chromium `base` library still has fourteen failing Windows Phone source files in the latest build attempt, including file access, message dispatch, process launch, IPC, battery reporting, and profiling. There is no linked browser, phone package, or on-device navigation test. No firmware was flashed or written during this work. The experimental V8 configuration also disables WebAssembly, which limits modern-site compatibility.
 
 See [current build evidence and blockers](docs/progress.md). Do not present this repository as a functional browser release.

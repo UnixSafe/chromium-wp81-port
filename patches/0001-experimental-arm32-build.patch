@@ -664,6 +664,60 @@ index 2398b4f..3ae2eb6 100644
  }
  
  #elif BUILDFLAG(IS_APPLE)
+diff --git a/base/files/file_path_watcher_win.cc b/base/files/file_path_watcher_win.cc
+index a1dbf2a..0b9b105 100644
+--- a/base/files/file_path_watcher_win.cc
++++ b/base/files/file_path_watcher_win.cc
+@@ -59,11 +59,23 @@ base::expected<base::win::ScopedHandle, CreateFileHandleError>
+ CreateDirectoryHandle(const FilePath& dir) {
+   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+ 
++#if defined(WINUWP)
++  CREATEFILE2_EXTENDED_PARAMETERS parameters = {};
++  parameters.dwSize = sizeof(parameters);
++  parameters.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
++  parameters.dwFileFlags =
++      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED;
++  base::win::ScopedHandle handle(::CreateFile2(
++      dir.value().c_str(), FILE_LIST_DIRECTORY,
++      FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING,
++      &parameters));
++#else
+   base::win::ScopedHandle handle(::CreateFileW(
+       dir.value().c_str(), FILE_LIST_DIRECTORY,
+       FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+       OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+       nullptr));
++#endif
+ 
+   if (handle.is_valid()) {
+     File::Info file_info;
+diff --git a/base/files/file_win.cc b/base/files/file_win.cc
+index 2c9c277..71d95db 100644
+--- a/base/files/file_win.cc
++++ b/base/files/file_win.cc
+@@ -467,8 +467,21 @@ void File::DoInitialize(const FilePath& path, uint32_t flags) {
+     create_flags |= FILE_FLAG_SEQUENTIAL_SCAN;
+   }
+ 
++#if defined(WINUWP)
++  CREATEFILE2_EXTENDED_PARAMETERS parameters = {};
++  parameters.dwSize = sizeof(parameters);
++  constexpr DWORD kAttributes = FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_HIDDEN;
++  parameters.dwFileAttributes = create_flags & kAttributes;
++  if (!parameters.dwFileAttributes) {
++    parameters.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
++  }
++  parameters.dwFileFlags = create_flags & ~kAttributes;
++  file_.Set(CreateFile2(path.value().c_str(), access, sharing, disposition,
++                        &parameters));
++#else
+   file_.Set(CreateFile(path.value().c_str(), access, sharing, NULL, disposition,
+                        create_flags, NULL));
++#endif
+ 
+   if (file_.is_valid()) {
+     error_details_ = FILE_OK;
 diff --git a/base/functional/bind_internal.h b/base/functional/bind_internal.h
 index eeb7d1e..b467ddf 100644
 --- a/base/functional/bind_internal.h
@@ -968,6 +1022,18 @@ index b8147f0..2af3326 100644
  
  }  // namespace win
  #endif
+diff --git a/base/process/memory_win.cc b/base/process/memory_win.cc
+index 06ad566..a24d226 100644
+--- a/base/process/memory_win.cc
++++ b/base/process/memory_win.cc
+@@ -28,6 +28,7 @@ int ReleaseReservationOrTerminate(size_t size) {
+     return kRetryAllocation;
+   }
+   TerminateBecauseOutOfMemory(size);
++  return 0;
+ }
+ 
+ }  // namespace
 diff --git a/base/process/process_handle_win.cc b/base/process/process_handle_win.cc
 index 9327fae..59d1e02 100644
 --- a/base/process/process_handle_win.cc
@@ -1076,6 +1142,73 @@ index b2211d6..e027289 100644
  }
  
  bool NamedProcessIterator::IncludeEntry() {
+diff --git a/base/process/process_metrics_win.cc b/base/process/process_metrics_win.cc
+index 3a0400b..d791793 100644
+--- a/base/process/process_metrics_win.cc
++++ b/base/process/process_metrics_win.cc
+@@ -183,11 +183,11 @@ ProcessMetrics::GetMemoryInfo() const {
+ base::expected<TimeDelta, ProcessCPUUsageError>
+ ProcessMetrics::GetCumulativeCPUUsage() {
+   TRACE_EVENT("base", "GetCumulativeCPUUsage");
+-#if defined(ARCH_CPU_ARM64)
++#if defined(ARCH_CPU_ARM_FAMILY)
+   // Precise CPU usage is not available on Arm CPUs because they don't support
+   // constant rate TSC.
+   return GetImpreciseCumulativeCPUUsage(process_);
+-#else   // !defined(ARCH_CPU_ARM64)
++#else   // !defined(ARCH_CPU_ARM_FAMILY)
+   if (!time_internal::HasConstantRateTSC()) {
+     return GetImpreciseCumulativeCPUUsage(process_);
+   }
+@@ -213,7 +213,7 @@ ProcessMetrics::GetCumulativeCPUUsage() {
+ 
+   const double process_time_seconds = process_cycle_time / tsc_ticks_per_second;
+   return base::ok(Seconds(process_time_seconds));
+-#endif  // !defined(ARCH_CPU_ARM64)
++#endif  // !defined(ARCH_CPU_ARM_FAMILY)
+ }
+ 
+ ProcessMetrics::ProcessMetrics(ProcessHandle process) {
+@@ -240,12 +240,21 @@ ProcessMetrics::ProcessMetrics(ProcessHandle process) {
+ }
+ 
+ size_t GetSystemCommitCharge() {
++#if defined(WINUWP)
++  MEMORYSTATUSEX status = {.dwLength = sizeof(status)};
++  if (!::GlobalMemoryStatusEx(&status)) {
++    return 0;
++  }
++  return static_cast<size_t>(
++      (status.ullTotalPageFile - status.ullAvailPageFile) / 1024);
++#else
+   PERFORMANCE_INFORMATION info;
+   if (!::GetPerformanceInfo(&info, sizeof(info))) {
+     DLOG(ERROR) << "Failed to fetch internal performance info.";
+     return 0;
+   }
+   return (info.CommitTotal * info.PageSize) / 1024;
++#endif
+ }
+ 
+ // This function uses the following mapping between MEMORYSTATUSEX and
+@@ -284,6 +293,9 @@ SystemPerformanceInfo& SystemPerformanceInfo::operator=(
+ // Retrieves performance counters from the operating system.
+ // Fills in the provided |info| structure. Returns true on success.
+ BASE_EXPORT bool GetSystemPerformanceInfo(SystemPerformanceInfo* info) {
++#if defined(WINUWP)
++  return false;
++#else
+   SYSTEM_PERFORMANCE_INFORMATION counters = {};
+   {
+     // The call to NtQuerySystemInformation might block on a lock.
+@@ -313,6 +325,7 @@ BASE_EXPORT bool GetSystemPerformanceInfo(SystemPerformanceInfo* info) {
+   info->page_read_ios = counters.PageReadIos;
+ 
+   return true;
++#endif
+ }
+ 
+ ByteSize SystemMemoryInfo::GetAvailablePhysicalMemory() const {
 diff --git a/base/profiler/register_context_registers.h b/base/profiler/register_context_registers.h
 index a600208..02b014b 100644
 --- a/base/profiler/register_context_registers.h
@@ -1188,6 +1321,33 @@ index 797febf..520b966 100644
    std::unique_ptr<win::ScopedCOMInitializer> scoped_com_initializer_;
  };
  
+diff --git a/base/threading/platform_thread_metrics_win.cc b/base/threading/platform_thread_metrics_win.cc
+index e3ba14c..992da81 100644
+--- a/base/threading/platform_thread_metrics_win.cc
++++ b/base/threading/platform_thread_metrics_win.cc
+@@ -74,11 +74,11 @@ PlatformThreadMetrics::PlatformThreadMetrics(win::ScopedHandle&& handle)
+ 
+ std::optional<TimeDelta> PlatformThreadMetrics::GetCumulativeCPUUsage() {
+   TRACE_EVENT("base", "Thread::GetCumulativeCPUUsage");
+-#if defined(ARCH_CPU_ARM64)
++#if defined(ARCH_CPU_ARM_FAMILY)
+   // Precise CPU usage is not available on Arm CPUs because they don't support
+   // constant rate TSC.
+   return GetImpreciseCumulativeCPUUsage(handle_);
+-#else   // !defined(ARCH_CPU_ARM64)
++#else   // !defined(ARCH_CPU_ARM_FAMILY)
+   if (!time_internal::HasConstantRateTSC()) {
+     return GetImpreciseCumulativeCPUUsage(handle_);
+   }
+@@ -98,7 +98,7 @@ std::optional<TimeDelta> PlatformThreadMetrics::GetCumulativeCPUUsage() {
+   }
+ 
+   return Seconds(cycle_time / tsc_ticks_per_second);
+-#endif  // !defined(ARCH_CPU_ARM64)
++#endif  // !defined(ARCH_CPU_ARM_FAMILY)
+ }
+ 
+ }  // namespace base
 diff --git a/base/win/pe_image.cc b/base/win/pe_image.cc
 index be011c9..fc83e71 100644
 --- a/base/win/pe_image.cc

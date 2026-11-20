@@ -6186,6 +6186,116 @@ index d3fdd11..d593df4 100644
  }
  
  group("common") {
+diff --git a/components/sqlite_vfs/file_system_id.cc b/components/sqlite_vfs/file_system_id.cc
+index 7a26f81..c00a9c8 100644
+--- a/components/sqlite_vfs/file_system_id.cc
++++ b/components/sqlite_vfs/file_system_id.cc
+@@ -31,8 +31,9 @@ std::optional<FileSystemId> GetFileSystemId(Client client,
+     // Try to get the full 128-bit identifier for the file. Note that not all
+     // versions of Windows and all filesystems support this.
+     FILE_ID_INFO id_info = {};
+-    if (::GetFileInformationByHandleEx(file.GetPlatformFile(), FileIdInfo,
+-                                       &id_info, sizeof(id_info)) &&
++    const BOOL has_id = ::GetFileInformationByHandleEx(
++        file.GetPlatformFile(), FileIdInfo, &id_info, sizeof(id_info));
++    if (has_id &&
+         !std::ranges::all_of(id_info.FileId.Identifier,
+                              [](uint8_t b) { return b == 0; })) {
+       return FileSystemId{
+@@ -41,6 +42,11 @@ std::optional<FileSystemId> GetFileSystemId(Client client,
+       };
+     }
+ 
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++    if (!has_id) {
++      error = base::File::GetLastFileError();
++    }
++#else
+     // Fall-back to getting the 64-bit file index.
+     BY_HANDLE_FILE_INFORMATION info = {};
+     if (!::GetFileInformationByHandle(file.GetPlatformFile(), &info)) {
+@@ -56,6 +62,7 @@ std::optional<FileSystemId> GetFileSystemId(Client client,
+           .copy_prefix_from(base::byte_span_from_ref(file_index));
+       return id;
+     }
++#endif
+ #elif BUILDFLAG(IS_POSIX)
+     base::stat_wrapper_t stat_info;
+     if (base::File::Fstat(file.GetPlatformFile(), &stat_info) != 0) {
+diff --git a/components/tracing/BUILD.gn b/components/tracing/BUILD.gn
+index 74237ca..85823f4 100644
+--- a/components/tracing/BUILD.gn
++++ b/components/tracing/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build_overrides/build.gni")
++import("//build/config/win/phone81.gni")
+ import("//testing/test.gni")
+ 
+ if (is_android) {
+@@ -43,7 +44,7 @@ component("tracing_config") {
+   ]
+ }
+ 
+-if (is_win) {
++if (is_win && !phone81_port) {
+   component("tracing_etw") {
+     sources = [
+       "common/active_processes_win.cc",
+@@ -75,6 +76,14 @@ if (is_win) {
+   }
+ }
+ 
++# Other desktop-only GN targets still refer to this name while GN generates
++# the full Windows target graph. The Phone browser does not depend on it.
++if (is_win && phone81_port) {
++  source_set("tracing_etw") {
++    sources = [ "tracing_export.h" ]
++  }
++}
++
+ component("tracing_metrics") {
+   sources = [
+     "common/background_tracing_metrics_provider.cc",
+@@ -142,7 +151,7 @@ source_set("unit_tests") {
+ 
+   data = [ "$root_gen_dir/third_party/perfetto/protos/perfetto/config/chrome/scenario_config.descriptor" ]
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [
+       "common/active_processes_win_unittest.cc",
+       "common/etw_consumer_win_unittest.cc",
+diff --git a/components/viz/service/display_embedder/output_surface_provider_impl.cc b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+index c15bbfb..de87ccf 100644
+--- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
++++ b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+@@ -34,8 +34,11 @@
+ #include "ui/base/ui_base_switches.h"
+ 
+ #if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "components/viz/service/display_embedder/software_output_device_win.h"
+ #endif
++#endif
+ 
+ #if BUILDFLAG(IS_APPLE)
+ #include "components/viz/service/display_embedder/software_output_device_mac.h"
+@@ -144,7 +147,11 @@ OutputSurfaceProviderImpl::CreateSoftwareOutputDeviceForPlatform(
+   if (headless_)
+     return std::make_unique<SoftwareOutputDevice>();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BASE_WIN_IS_PHONE_8_1
++  // The Phone application has a CoreWindow, not a desktop HWND. Keep the
++  // raster surface available for the shell's CoreWindow presenter to copy.
++  return std::make_unique<SoftwareOutputDevice>();
++#elif BUILDFLAG(IS_WIN)
+   HWND child_hwnd;
+   auto device = CreateSoftwareOutputDeviceWin(
+       surface_handle, &output_device_backing_, display_client, child_hwnd);
 diff --git a/components/zucchini/BUILD.gn b/components/zucchini/BUILD.gn
 index 0b98a83..944def5 100644
 --- a/components/zucchini/BUILD.gn
@@ -6228,6 +6338,33 @@ index 0b98a83..944def5 100644
    process_version_rc_template("zucchini_exe_version") {
      template_file = "zucchini_exe_version.rc.version"
      output = "$target_gen_dir/zucchini_exe_version.rc"
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+index 0666c02..40bebd8 100644
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -9,6 +9,7 @@ import("//build/config/features.gni")
+ import("//build/config/linux/pangocairo/pangocairo.gni")
+ import("//build/config/ozone.gni")
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//components/viz/common/debugger/viz_debugger.gni")
+ import("//components/vrp_flags/features.gni")
+ import("//content/browser/devtools/features.gni")
+@@ -3501,10 +3502,10 @@ source_set("browser") {
+   }
+ 
+   if (is_win) {
+-    deps += [
+-      "//components/tracing:tracing_etw",
+-      "//ui/base/ime/win",
+-    ]
++    deps += [ "//ui/base/ime/win" ]
++    if (!phone81_port) {
++      deps += [ "//components/tracing:tracing_etw" ]
++    }
+   }
+ 
+   if (use_aura) {
 diff --git a/content/browser/browser_main_runner_impl.cc b/content/browser/browser_main_runner_impl.cc
 index 485e4cb..c3e12ab 100644
 --- a/content/browser/browser_main_runner_impl.cc
@@ -6281,8 +6418,38 @@ index 39261d4..b889af9 100644
    std::unique_ptr<ui::ScopedOleInitializer> ole_initializer_;
  #endif
  };
+diff --git a/content/browser/devtools/protocol/tracing_handler.cc b/content/browser/devtools/protocol/tracing_handler.cc
+index ee81a45..e53ffd8 100644
+--- a/content/browser/devtools/protocol/tracing_handler.cc
++++ b/content/browser/devtools/protocol/tracing_handler.cc
+@@ -30,6 +30,7 @@
+ #include "base/trace_event/traced_value.h"
+ #include "base/trace_event/tracing_agent.h"
+ #include "base/values.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "build/build_config.h"
+ #include "content/browser/devtools/devtools_agent_host_impl.h"
+ #include "content/browser/devtools/devtools_io_context.h"
+@@ -60,7 +61,7 @@
+ #include "third_party/abseil-cpp/absl/strings/ascii.h"
+ #include "third_party/inspector_protocol/crdtp/json.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "components/tracing/common/etw_stack_sampling_win.h"
+ #endif
+ 
+@@ -773,7 +774,7 @@ void TracingHandler::Start(
+     }
+ 
+     ConvertToTrackEventConfigIfNeeded(trace_config);
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+     // TODO(jessemckenna): replace this with
+     // `tracing::AdaptPerfettoConfigForChrome()`, to make sure all
+     // Chrome-specific config adaptations are applied.
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
-index 1afecb8..1b01c44 100644
+index 1afecb8..1d4b40c 100644
 --- a/content/shell/BUILD.gn
 +++ b/content/shell/BUILD.gn
 @@ -8,6 +8,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -6293,14 +6460,16 @@ index 1afecb8..1b01c44 100644
  import("//build/rust/rust_static_library.gni")
  import("//content/public/common/features.gni")
  import("//device/vr/buildflags/buildflags.gni")
-@@ -43,6 +44,7 @@ if (is_android) {
+@@ -43,7 +44,8 @@ if (is_android) {
  
  # TODO(crbug.com/1336055, spang): Investigate using shell_views with cast builds
  # as true.
+-shell_use_toolkit_views = toolkit_views && !is_castos
 +shell_phone81 = current_os == "winuwp" && phone81_port
- shell_use_toolkit_views = toolkit_views && !is_castos
++shell_use_toolkit_views = toolkit_views && !is_castos && !shell_phone81
  
  declare_args() {
+   content_shell_product_name = "Content Shell"
 @@ -105,7 +107,17 @@ static_library("content_shell_app") {
        "//ui/native_theme",
      ]
@@ -6349,7 +6518,27 @@ index 1afecb8..1b01c44 100644
      sources += [
        "common/v8_crashpad_support_win.cc",
        "common/v8_crashpad_support_win.h",
-@@ -755,10 +763,14 @@ if (is_android) {
+@@ -454,6 +462,19 @@ static_library("content_shell_lib") {
+     deps += [ "//ui/views" ]
+   }
+ 
++  if (shell_phone81) {
++    sources += [
++      "browser/shell_phone_presenter.cc",
++      "browser/shell_phone_presenter.h",
++      "browser/shell_phone_touch.cc",
++      "browser/shell_phone_touch.h",
++      "browser/shell_phone_window.cc",
++      "browser/shell_phone_window.h",
++    ]
++    deps += [ "//components/viz/common", "//ui/display" ]
++    libs = [ "d3d11.lib" ]
++  }
++
+   if (use_aura) {
+     deps += [
+       "//ui/aura",
+@@ -755,10 +776,14 @@ if (is_android) {
    executable("content_shell") {
      testonly = true
  
@@ -6368,7 +6557,7 @@ index 1afecb8..1b01c44 100644
      }
  
      defines = []
-@@ -767,11 +779,14 @@ if (is_android) {
+@@ -767,11 +792,14 @@ if (is_android) {
        ":content_shell_app",
        ":content_shell_lib",
        ":pak",
@@ -6384,7 +6573,7 @@ index 1afecb8..1b01c44 100644
      data_deps = [
        ":pak",
        "//tools/v8_context_snapshot",
-@@ -782,7 +797,19 @@ if (is_android) {
+@@ -782,7 +810,19 @@ if (is_android) {
          "//base",
          "//sandbox",
        ]
@@ -6405,7 +6594,7 @@ index 1afecb8..1b01c44 100644
          defines += [ "WIN_CONSOLE_APP" ]
        } else {
          # Set /SUBSYSTEM:WINDOWS unless a console build has been requested.
-@@ -791,14 +818,12 @@ if (is_android) {
+@@ -791,14 +831,12 @@ if (is_android) {
        }
  
        # Limit pre-loaded modules to improve sandbox coverage in content_shell.
@@ -6488,10 +6677,10 @@ index b4c91f7..828da70 100644
      std::string process_type =
 diff --git a/content/shell/app/shell_main_winuwp.cc b/content/shell/app/shell_main_winuwp.cc
 new file mode 100644
-index 0000000..3abc91c
+index 0000000..7a69a58
 --- /dev/null
 +++ b/content/shell/app/shell_main_winuwp.cc
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,164 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -6583,6 +6772,7 @@ index 0000000..3abc91c
 +      return E_INVALIDARG;
 +    }
 +    command_line->AppendSwitch(switches::kSingleProcess);
++    command_line->AppendSwitch("disable-gpu");
 +    // This AppContainer hosts the browser and all content threads. There are
 +    // no child processes for Chromium's desktop sandbox broker to launch.
 +    sandbox::SandboxInterfaceInfo sandbox_info{};
@@ -6655,6 +6845,560 @@ index 0000000..3abc91c
 +  auto source = Make<ShellViewSource>(instance);
 +  return source ? application->Run(source.Get()) : E_OUTOFMEMORY;
 +}
+diff --git a/content/shell/browser/shell_phone_presenter.cc b/content/shell/browser/shell_phone_presenter.cc
+new file mode 100644
+index 0000000..1dfc1e6
+--- /dev/null
++++ b/content/shell/browser/shell_phone_presenter.cc
+@@ -0,0 +1,83 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++struct IUnknown;
++#include "content/shell/browser/shell_phone_presenter.h"
++
++namespace content {
++using Microsoft::WRL::ComPtr;
++
++HRESULT PhoneFramePresenter::Submit(IUnknown* window,
++                                    UINT width,
++                                    UINT height,
++                                    const void* pixels,
++                                    UINT row_bytes) {
++  HRESULT hr = Present(window, width, height, pixels, row_bytes);
++  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
++    chain_.Reset();
++    context_.Reset();
++    device_.Reset();
++  }
++  return hr;
++}
++
++HRESULT PhoneFramePresenter::Present(IUnknown* window,
++                                     UINT width,
++                                     UINT height,
++                                     const void* pixels,
++                                     UINT row_bytes) {
++  if (!device_) {
++    HRESULT hr =
++        D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
++                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
++                          D3D11_SDK_VERSION, &device_, nullptr, &context_);
++    if (FAILED(hr)) {
++      return hr;
++    }
++  }
++  if (!chain_ || width_ != width || height_ != height) {
++    if (chain_) {
++      HRESULT hr = chain_->ResizeBuffers(2, width, height,
++                                         DXGI_FORMAT_B8G8R8A8_UNORM, 0);
++      if (FAILED(hr)) {
++        return hr;
++      }
++    } else {
++      ComPtr<IDXGIDevice> dxgi;
++      ComPtr<IDXGIAdapter> adapter;
++      ComPtr<IDXGIFactory2> factory;
++      HRESULT hr = device_.As(&dxgi);
++      if (FAILED(hr) || FAILED(hr = dxgi->GetAdapter(&adapter)) ||
++          FAILED(hr = adapter->GetParent(IID_PPV_ARGS(&factory)))) {
++        return hr;
++      }
++      DXGI_SWAP_CHAIN_DESC1 desc{};
++      desc.Width = width;
++      desc.Height = height;
++      desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
++      desc.SampleDesc.Count = 1;
++      desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
++      desc.BufferCount = 2;
++      desc.Scaling = DXGI_SCALING_STRETCH;
++      desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
++      desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
++      hr = factory->CreateSwapChainForCoreWindow(device_.Get(), window, &desc,
++                                                 nullptr, &chain_);
++      if (FAILED(hr)) {
++        return hr;
++      }
++    }
++    width_ = width;
++    height_ = height;
++  }
++  ComPtr<ID3D11Texture2D> back;
++  HRESULT hr = chain_->GetBuffer(0, IID_PPV_ARGS(&back));
++  if (FAILED(hr)) {
++    return hr;
++  }
++  context_->UpdateSubresource(back.Get(), 0, nullptr, pixels, row_bytes, 0);
++  return chain_->Present(1, 0);
++}
++
++}  // namespace content
+diff --git a/content/shell/browser/shell_phone_presenter.h b/content/shell/browser/shell_phone_presenter.h
+new file mode 100644
+index 0000000..4729ca4
+--- /dev/null
++++ b/content/shell/browser/shell_phone_presenter.h
+@@ -0,0 +1,34 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_SHELL_BROWSER_SHELL_PHONE_PRESENTER_H_
++#define CONTENT_SHELL_BROWSER_SHELL_PHONE_PRESENTER_H_
++
++#include <d3d11.h>
++#include <dxgi1_2.h>
++#include <wrl/client.h>
++
++namespace content {
++class PhoneFramePresenter {
++ public:
++  HRESULT Submit(IUnknown* window,
++                 UINT width,
++                 UINT height,
++                 const void* pixels,
++                 UINT row_bytes);
++
++ private:
++  HRESULT Present(IUnknown* window,
++                  UINT width,
++                  UINT height,
++                  const void* pixels,
++                  UINT row_bytes);
++  Microsoft::WRL::ComPtr<ID3D11Device> device_;
++  Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
++  Microsoft::WRL::ComPtr<IDXGISwapChain1> chain_;
++  UINT width_ = 0;
++  UINT height_ = 0;
++};
++}  // namespace content
++#endif
+diff --git a/content/shell/browser/shell_phone_touch.cc b/content/shell/browser/shell_phone_touch.cc
+new file mode 100644
+index 0000000..8cc7ff4
+--- /dev/null
++++ b/content/shell/browser/shell_phone_touch.cc
+@@ -0,0 +1,74 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++struct IUnknown;
++#include "content/shell/browser/shell_phone_touch.h"
++
++#include <windows.ui.input.h>
++#include <wrl/event.h>
++
++#include <utility>
++
++#include "base/check.h"
++#include "base/win/windows_types.h"
++
++namespace content {
++namespace core = ABI::Windows::UI::Core;
++namespace foundation = ABI::Windows::Foundation;
++using Microsoft::WRL::ComPtr;
++using PointerHandler =
++    foundation::ITypedEventHandler<core::CoreWindow*, core::PointerEventArgs*>;
++
++template <typename Registration>
++void PhoneTouchInput::BindPointer(Registration registration,
++                                  ui::EventType type,
++                                  EventRegistrationToken* token) {
++  auto handler = Microsoft::WRL::Callback<PointerHandler>(
++      [this, type](core::ICoreWindow*, core::IPointerEventArgs* args) {
++        ComPtr<ABI::Windows::UI::Input::IPointerPoint> point;
++        UINT32 id;
++        foundation::Point position;
++        if (FAILED(args->get_CurrentPoint(&point)) ||
++            FAILED(point->get_PointerId(&id)) ||
++            FAILED(point->get_Position(&position))) {
++          return S_OK;
++        }
++        if (type == ui::EventType::kTouchPressed) {
++          if (!contacts_.insert(id).second) {
++            return S_OK;
++          }
++        } else if (!contacts_.contains(id)) {
++          return S_OK;
++        } else if (type != ui::EventType::kTouchMoved) {
++          contacts_.erase(id);
++        }
++        ComPtr<core::ICoreWindowEventArgs> common;
++        if (SUCCEEDED(args->QueryInterface(IID_PPV_ARGS(&common)))) {
++          common->put_Handled(true);
++        }
++        callback_.Run(type, id, position.X, position.Y);
++        return S_OK;
++      });
++  CHECK(handler &&
++        SUCCEEDED((window_.Get()->*registration)(handler.Get(), token)));
++}
++
++PhoneTouchInput::PhoneTouchInput(core::ICoreWindow* window, Callback callback)
++    : window_(window), callback_(std::move(callback)) {
++  BindPointer(&core::ICoreWindow::add_PointerPressed,
++              ui::EventType::kTouchPressed, &pressed_);
++  BindPointer(&core::ICoreWindow::add_PointerMoved, ui::EventType::kTouchMoved,
++              &moved_);
++  BindPointer(&core::ICoreWindow::add_PointerReleased,
++              ui::EventType::kTouchReleased, &released_);
++  BindPointer(&core::ICoreWindow::add_PointerCaptureLost,
++              ui::EventType::kTouchCancelled, &lost_);
++}
++PhoneTouchInput::~PhoneTouchInput() {
++  window_->remove_PointerPressed(pressed_);
++  window_->remove_PointerMoved(moved_);
++  window_->remove_PointerReleased(released_);
++  window_->remove_PointerCaptureLost(lost_);
++}
++}  // namespace content
+diff --git a/content/shell/browser/shell_phone_touch.h b/content/shell/browser/shell_phone_touch.h
+new file mode 100644
+index 0000000..a158dc6
+--- /dev/null
++++ b/content/shell/browser/shell_phone_touch.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_SHELL_BROWSER_SHELL_PHONE_TOUCH_H_
++#define CONTENT_SHELL_BROWSER_SHELL_PHONE_TOUCH_H_
++
++#include <windows.ui.core.h>
++#include <wrl/client.h>
++
++#include <set>
++
++#include "base/functional/callback.h"
++#include "ui/events/types/event_type.h"
++
++namespace content {
++class PhoneTouchInput {
++ public:
++  using Callback =
++      base::RepeatingCallback<void(ui::EventType, UINT32, float, float)>;
++  PhoneTouchInput(ABI::Windows::UI::Core::ICoreWindow* window,
++                  Callback callback);
++  ~PhoneTouchInput();
++
++ private:
++  template <typename Registration>
++  void BindPointer(Registration registration,
++                   ui::EventType type,
++                   EventRegistrationToken* token);
++  Microsoft::WRL::ComPtr<ABI::Windows::UI::Core::ICoreWindow> window_;
++  Callback callback_;
++  std::set<UINT32> contacts_;
++  EventRegistrationToken pressed_{}, moved_{}, released_{}, lost_{};
++};
++}  // namespace content
++#endif
+diff --git a/content/shell/browser/shell_phone_window.cc b/content/shell/browser/shell_phone_window.cc
+new file mode 100644
+index 0000000..971f46c
+--- /dev/null
++++ b/content/shell/browser/shell_phone_window.cc
+@@ -0,0 +1,206 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++struct IUnknown;
++#include "content/shell/browser/shell_phone_window.h"
++
++#include <windows.ui.core.h>
++#include <wrl/client.h>
++#include <wrl/wrappers/corewrappers.h>
++
++#include <utility>
++
++#include "base/check.h"
++#include "base/functional/bind.h"
++#include "base/location.h"
++#include "base/logging.h"
++#include "base/task/bind_post_task.h"
++#include "base/timer/timer.h"
++#include "base/win/windows_types.h"
++#include "components/viz/common/frame_sinks/copy_output_result.h"
++#include "content/public/browser/render_widget_host_view.h"
++#include "content/public/browser/web_contents.h"
++#include "content/shell/browser/shell_phone_presenter.h"
++#include "content/shell/browser/shell_phone_touch.h"
++#include "ui/aura/window.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/display/screen_base.h"
++#include "ui/events/event.h"
++#include "ui/events/event_utils.h"
++#include "ui/events/keycodes/dom/dom_code.h"
++
++namespace content {
++namespace {
++namespace core = ABI::Windows::UI::Core;
++namespace foundation = ABI::Windows::Foundation;
++using Microsoft::WRL::ComPtr;
++// WindowTreeHost queries the display during its base constructor and
++// destructor.
++class PhoneScreen {
++ protected:
++  PhoneScreen() {
++    CHECK(!display::Screen::HasScreen());
++    display::Screen::SetScreenInstance(&screen_);
++  }
++  ~PhoneScreen() { display::Screen::SetScreenInstance(nullptr); }
++  display::ScreenBase screen_;
++};
++
++class PhoneWindow final : private PhoneScreen, public aura::WindowTreeHost {
++ public:
++  PhoneWindow() {
++    ComPtr<core::ICoreWindowStatic> factory;
++    CHECK(SUCCEEDED(
++        RoGetActivationFactory(Microsoft::WRL::Wrappers::HStringReference(
++                                   RuntimeClass_Windows_UI_Core_CoreWindow)
++                                   .Get(),
++                               IID_PPV_ARGS(&factory))));
++    CHECK(SUCCEEDED(factory->GetForCurrentThread(&window_)) && window_);
++    UpdateBounds();
++    SetNativeWindowOcclusionEnabled(false);
++    CreateCompositor(false);
++    OnAcceleratedWidgetAvailable();
++    touch_ = std::make_unique<PhoneTouchInput>(
++        window_.Get(),
++        base::BindRepeating(&PhoneWindow::OnTouch, base::Unretained(this)));
++  }
++
++  ~PhoneWindow() override {
++    timer_.Stop();
++    touch_.reset();
++    DestroyCompositor();
++    DestroyDispatcher();
++  }
++
++  void ShowContents(WebContents* contents) {
++    contents_ = contents->GetWeakPtr();
++    contents->Focus();
++    contents->WasShown();
++    timer_.Start(FROM_HERE, base::Milliseconds(33), this, &PhoneWindow::Tick);
++  }
++
++ private:
++  void OnTouch(ui::EventType type, UINT32 id, float x, float y) {
++    gfx::PointF location(x, y);
++    ui::TouchEvent event(type, location, location, ui::EventTimeForNow(),
++                         ui::PointerDetails(ui::EventPointerType::kTouch, id));
++    SendEventToSink(&event);
++  }
++
++  void UpdateBounds() {
++    foundation::Rect rect;
++    if (FAILED(window_->get_Bounds(&rect)) || rect.Width <= 0 ||
++        rect.Height <= 0) {
++      return;
++    }
++    gfx::Rect next(static_cast<int>(rect.Width), static_cast<int>(rect.Height));
++    if (next == bounds_) {
++      return;
++    }
++    screen_.display_list().AddOrUpdateDisplay(
++        display::Display(1, next), display::DisplayList::Type::PRIMARY);
++    SetBoundsInPixels(next);
++    if (contents_) {
++      contents_->GetNativeView()->SetBounds(bounds_);
++    }
++  }
++
++  void Tick() {
++    UpdateBounds();
++    if (!contents_ || pending_ || bounds_.IsEmpty()) {
++      return;
++    }
++    boolean visible = false;
++    if (FAILED(window_->get_Visible(&visible)) || !visible) {
++      return;
++    }
++    auto* view = contents_->GetRenderWidgetHostView();
++    if (!view) {
++      return;
++    }
++    pending_ = true;
++    view->CopyFromSurface(
++        {}, bounds_.size(), base::Milliseconds(250),
++        base::BindPostTaskToCurrentDefault(base::BindOnce(
++            &PhoneWindow::OnFrame, weak_factory_.GetWeakPtr(), contents_)));
++  }
++
++  void OnFrame(base::WeakPtr<WebContents> source,
++               const CopyFromSurfaceResult& result) {
++    pending_ = false;
++    if (!source || source.get() != contents_.get() || !result.has_value()) {
++      return;
++    }
++    const SkBitmap& bitmap = result->bitmap;
++    if (bitmap.width() != bounds_.width() ||
++        bitmap.height() != bounds_.height() || !bitmap.getPixels()) {
++      return;
++    }
++    SkBitmap bgra;
++    const SkBitmap* frame = &bitmap;
++    if (bitmap.colorType() != kBGRA_8888_SkColorType) {
++      if (!bgra.tryAllocPixels(
++              bitmap.info().makeColorType(kBGRA_8888_SkColorType)) ||
++          !bitmap.readPixels(bgra.pixmap())) {
++        return;
++      }
++      frame = &bgra;
++    }
++    HRESULT hr =
++        presenter_.Submit(window_.Get(), frame->width(), frame->height(),
++                          frame->getPixels(), frame->rowBytes());
++    if (FAILED(hr) && hr != last_present_error_) {
++      LOG(ERROR) << "CoreWindow frame presentation failed, HRESULT " << std::hex
++                 << hr;
++    }
++    last_present_error_ = hr;
++  }
++
++  ui::EventSource* GetEventSource() override { return this; }
++  gfx::AcceleratedWidget GetAcceleratedWidget() override { return {}; }
++  gfx::Rect GetBoundsInPixels() const override { return bounds_; }
++  void SetBoundsInPixels(const gfx::Rect& bounds) override {
++    bounds_ = bounds;
++    if (compositor()) {
++      OnHostResizedInPixels(bounds.size());
++    }
++  }
++  gfx::Point GetLocationOnScreenInPixels() const override { return {}; }
++  void ShowImpl() override {}
++  void HideImpl() override {}
++  void SetCapture() override { window_->SetPointerCapture(); }
++  void ReleaseCapture() override { window_->ReleasePointerCapture(); }
++  bool CaptureSystemKeyEventsImpl(
++      std::optional<base::flat_set<ui::DomCode>>) override {
++    return false;
++  }
++  void ReleaseSystemKeyEventCapture() override {}
++  bool IsKeyLocked(ui::DomCode) override { return false; }
++  base::flat_map<std::string, std::string> GetKeyboardLayoutMap() override {
++    return {};
++  }
++  void SetCursorNative(gfx::NativeCursor) override {}
++  void MoveCursorToScreenLocationInPixels(const gfx::Point&) override {}
++  void OnCursorVisibilityChangedNative(bool) override {}
++
++  ComPtr<core::ICoreWindow> window_;
++  PhoneFramePresenter presenter_;
++  gfx::Rect bounds_;
++  base::WeakPtr<WebContents> contents_;
++  base::RepeatingTimer timer_;
++  std::unique_ptr<PhoneTouchInput> touch_;
++  HRESULT last_present_error_ = S_OK;
++  bool pending_ = false;
++  base::WeakPtrFactory<PhoneWindow> weak_factory_{this};
++};
++}  // namespace
++
++std::unique_ptr<aura::WindowTreeHost> CreatePhoneWindowTreeHost() {
++  return std::make_unique<PhoneWindow>();
++}
++
++void ShowPhoneWebContents(aura::WindowTreeHost* host, WebContents* contents) {
++  static_cast<PhoneWindow*>(host)->ShowContents(contents);
++}
++}  // namespace content
+diff --git a/content/shell/browser/shell_phone_window.h b/content/shell/browser/shell_phone_window.h
+new file mode 100644
+index 0000000..fbe6068
+--- /dev/null
++++ b/content/shell/browser/shell_phone_window.h
+@@ -0,0 +1,19 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_SHELL_BROWSER_SHELL_PHONE_WINDOW_H_
++#define CONTENT_SHELL_BROWSER_SHELL_PHONE_WINDOW_H_
++
++#include <memory>
++
++namespace aura {
++class WindowTreeHost;
++}
++
++namespace content {
++class WebContents;
++std::unique_ptr<aura::WindowTreeHost> CreatePhoneWindowTreeHost();
++void ShowPhoneWebContents(aura::WindowTreeHost* host, WebContents* contents);
++}  // namespace content
++#endif
+diff --git a/content/shell/browser/shell_platform_data_aura.cc b/content/shell/browser/shell_platform_data_aura.cc
+index 50450e5..69c7f47 100644
+--- a/content/shell/browser/shell_platform_data_aura.cc
++++ b/content/shell/browser/shell_platform_data_aura.cc
+@@ -19,7 +19,11 @@
+ #include "ui/aura/window_event_dispatcher.h"
+ #include "ui/base/ime/init/input_method_factory.h"
+ #include "ui/base/ime/input_method.h"
++#if defined(WINUWP_8_1)
++#include "content/shell/browser/shell_phone_window.h"
++#else
+ #include "ui/ozone/public/ozone_platform.h"
++#endif
+ #include "ui/platform_window/platform_window_init_properties.h"
+ #include "ui/wm/core/cursor_loader.h"
+ #include "ui/wm/core/default_activation_client.h"
+@@ -86,10 +90,14 @@ ShellPlatformDataAura::ShellPlatformDataAura(const gfx::Size& initial_size) {
+   }
+ #endif  // BUILDFLAG(IS_OZONE)
+ 
++#if defined(WINUWP_8_1)
++  host_ = CreatePhoneWindowTreeHost();
++#else
+   ui::PlatformWindowInitProperties properties;
+   properties.bounds = gfx::Rect(initial_size);
+ 
+   host_ = aura::WindowTreeHost::Create(std::move(properties));
++#endif
+   host_->InitHost();
+   host_->window()->Show();
+   host_->window()->SetLayoutManager(
+diff --git a/content/shell/browser/shell_platform_delegate_aura.cc b/content/shell/browser/shell_platform_delegate_aura.cc
+index 907350d..647729f 100644
+--- a/content/shell/browser/shell_platform_delegate_aura.cc
++++ b/content/shell/browser/shell_platform_delegate_aura.cc
+@@ -7,6 +7,9 @@
+ #include "content/public/browser/render_widget_host_view.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/shell/browser/shell.h"
++#if defined(WINUWP_8_1)
++#include "content/shell/browser/shell_phone_window.h"
++#endif
+ #include "content/shell/browser/shell_platform_data_aura.h"
+ #include "ui/aura/env.h"
+ #include "ui/aura/window.h"
+@@ -41,7 +44,9 @@ void ShellPlatformDelegate::CreatePlatformWindow(
+   DCHECK(!shell_data_map_.contains(shell));
+   ShellData& shell_data = shell_data_map_[shell];
+ 
++#if !defined(WINUWP_8_1)
+   platform_->aura->ResizeWindow(initial_size);
++#endif
+ 
+   shell_data.window = platform_->aura->host()->window();
+ }
+@@ -64,6 +69,10 @@ void ShellPlatformDelegate::SetContents(Shell* shell) {
+     parent->AddChild(content);
+ 
+   content->Show();
++#if defined(WINUWP_8_1)
++  platform_->aura->ShowWindow();
++  ShowPhoneWebContents(platform_->aura->host(), shell->web_contents());
++#endif
+ }
+ 
+ void ShellPlatformDelegate::ResizeWebContent(Shell* shell,
 diff --git a/crypto/BUILD.gn b/crypto/BUILD.gn
 index bb7c677..b990fe0 100644
 --- a/crypto/BUILD.gn
@@ -7451,6 +8195,35 @@ index 95ba20c..17af91d 100644
  }
  #endif
  
+diff --git a/mojo/public/cpp/base/read_only_file_mojom_traits.cc b/mojo/public/cpp/base/read_only_file_mojom_traits.cc
+index a7ec9b0..3e8c79e 100644
+--- a/mojo/public/cpp/base/read_only_file_mojom_traits.cc
++++ b/mojo/public/cpp/base/read_only_file_mojom_traits.cc
+@@ -17,6 +17,7 @@
+ #include <windows.h>
+ 
+ #include "base/win/security_util.h"
++#include "base/win/windows_phone_8_1.h"
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+ namespace mojo {
+@@ -43,9 +44,16 @@ bool IsReadOnlyFile(const base::File& file) {
+ 
+ bool IsPhysicalFile(const base::File& file) {
+ #if BUILDFLAG(IS_WIN)
++#if BASE_WIN_IS_PHONE_8_1
++  // A file ID is supplied by the file system, but not by a pipe or socket.
++  FILE_ID_INFO info = {};
++  return ::GetFileInformationByHandleEx(file.GetPlatformFile(), FileIdInfo,
++                                        &info, sizeof(info)) != FALSE;
++#else
+   // Verify if this is a real file (not a socket/pipe etc.).
+   DWORD type = GetFileType(file.GetPlatformFile());
+   return type == FILE_TYPE_DISK;
++#endif
+ #else
+   // This may block but in practice this is unlikely for already opened
+   // physical files.
 diff --git a/mojo/public/cpp/platform/named_platform_channel_win.cc b/mojo/public/cpp/platform/named_platform_channel_win.cc
 index 0b3763b..335ae43 100644
 --- a/mojo/public/cpp/platform/named_platform_channel_win.cc
@@ -7634,6 +8407,2273 @@ index 987186d..9cc3018 100644
  }
  
  void SetUnsafeFileHandleCallbackForTesting(
+diff --git a/net/BUILD.gn b/net/BUILD.gn
+index 67db0de..c6108a5 100644
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -1567,27 +1567,11 @@ component("net") {
+       "base/winsock_init.h",
+       "base/winsock_util.cc",
+       "base/winsock_util.h",
+-      "cert/x509_util_win.cc",
+-      "cert/x509_util_win.h",
+       "disk_cache/blockfile/file_win.cc",
+       "disk_cache/blockfile/mapped_file_win.cc",
+       "disk_cache/cache_util_win.cc",
+       "disk_cache/simple/simple_util_win.cc",
+-      "http/http_auth_handler_ntlm_win.cc",
+-      "http/http_auth_sspi_win.cc",
+-      "http/http_auth_sspi_win.h",
+       "http/url_security_manager_win.cc",
+-      "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win.cc",
+-      "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win.h",
+-      "proxy_resolution/win/dhcp_pac_file_fetcher_win.cc",
+-      "proxy_resolution/win/dhcp_pac_file_fetcher_win.h",
+-      "proxy_resolution/win/dhcpcsvc_init_win.cc",
+-      "proxy_resolution/win/dhcpcsvc_init_win.h",
+-      "proxy_resolution/win/proxy_config_service_win.cc",
+-      "proxy_resolution/win/proxy_config_service_win.h",
+-      "proxy_resolution/win/proxy_resolver_winhttp.cc",
+-      "proxy_resolution/win/proxy_resolver_winhttp.h",
+-      "proxy_resolution/win/proxy_resolver_winhttp_test_hooks.h",
+       "proxy_resolution/win/windows_system_proxy_resolution_request.cc",
+       "proxy_resolution/win/windows_system_proxy_resolution_request.h",
+       "proxy_resolution/win/windows_system_proxy_resolution_service.cc",
+@@ -1600,10 +1584,30 @@ component("net") {
+       "socket/tcp_socket_win.h",
+       "socket/udp_socket_win.cc",
+       "socket/udp_socket_win.h",
+-      "ssl/client_cert_store_win.cc",
+-      "ssl/client_cert_store_win.h",
+-      "ssl/ssl_platform_key_win.cc",
+     ]
++    if (phone81_port) {
++      sources -= [
++        "base/network_change_notifier_win.cc",
++        "base/network_change_notifier_win.h",
++        "base/network_cost_change_notifier_win.cc",
++        "base/network_cost_change_notifier_win.h",
++        "base/network_interfaces_win.cc",
++        "base/network_interfaces_win.h",
++        "http/url_security_manager_win.cc",
++        "socket/tcp_socket_io_completion_port_win.cc",
++        "socket/tcp_socket_io_completion_port_win.h",
++      ]
++      sources += [
++        "base/network_change_notifier_phone.cc",
++        "base/network_change_notifier_phone.h",
++        "base/network_information_phone.h",
++        "base/network_interfaces_phone.cc",
++        "http/url_security_manager_posix.cc",
++      ]
++      # The blockfile cache requires writable memory mappings, which the Phone
++      # AppContainer cannot create. DiskCache selects the simple backend.
++      sources -= filter_include(sources, [ "disk_cache/blockfile/*" ])
++    }
+   }
+ 
+   if (use_kerberos) {
+@@ -1648,7 +1652,29 @@ component("net") {
+     ]
+   }
+ 
+-  if (!is_win) {
++  if (is_win && !phone81_port) {
++    sources += [
++      "cert/x509_util_win.cc",
++      "cert/x509_util_win.h",
++      "http/http_auth_handler_ntlm_win.cc",
++      "http/http_auth_sspi_win.cc",
++      "http/http_auth_sspi_win.h",
++      "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win.cc",
++      "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win.h",
++      "proxy_resolution/win/dhcp_pac_file_fetcher_win.cc",
++      "proxy_resolution/win/dhcp_pac_file_fetcher_win.h",
++      "proxy_resolution/win/dhcpcsvc_init_win.cc",
++      "proxy_resolution/win/dhcpcsvc_init_win.h",
++      "proxy_resolution/win/proxy_config_service_win.cc",
++      "proxy_resolution/win/proxy_config_service_win.h",
++      "proxy_resolution/win/proxy_resolver_winhttp.cc",
++      "proxy_resolution/win/proxy_resolver_winhttp.h",
++      "proxy_resolution/win/proxy_resolver_winhttp_test_hooks.h",
++      "ssl/client_cert_store_win.cc",
++      "ssl/client_cert_store_win.h",
++      "ssl/ssl_platform_key_win.cc",
++    ]
++  } else {
+     sources += [
+       "http/http_auth_handler_ntlm_portable.cc",
+       "http/http_auth_ntlm_mechanism.cc",
+@@ -1700,7 +1726,7 @@ component("net") {
+       "//base/version_info",
+       "//net/cert:root_store_proto_lite",
+     ]
+-    if (is_win) {
++    if (is_win && !phone81_port) {
+       sources += [
+         "cert/internal/trust_store_win.cc",
+         "cert/internal/trust_store_win.h",
+@@ -1826,6 +1852,15 @@ component("net") {
+       "winhttp.lib",
+     ]
+ 
++    if (phone81_port) {
++      libs -= [
++        "crypt32.lib",
++        "dhcpcsvc.lib",
++        "ncrypt.lib",
++        "secur32.lib",
++        "winhttp.lib",
++      ]
++    }
+     ldflags = [ "/DELAYLOAD:urlmon.dll" ]
+   }
+ 
+@@ -3375,9 +3410,6 @@ target(_test_target_type, "net_unittests") {
+       "base/network_change_notifier_win_unittest.cc",
+       "base/network_cost_change_notifier_win_unittest.cc",
+       "base/network_interfaces_win_unittest.cc",
+-      "http/http_auth_sspi_win_unittest.cc",
+-      "http/mock_sspi_library_win.cc",
+-      "http/mock_sspi_library_win.h",
+       "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win_unittest.cc",
+       "proxy_resolution/win/dhcp_pac_file_fetcher_win_unittest.cc",
+       "proxy_resolution/win/proxy_config_service_win_unittest.cc",
+@@ -3568,7 +3600,13 @@ target(_test_target_type, "net_unittests") {
+     ]
+   }
+ 
+-  if (!is_win) {
++  if (is_win && !phone81_port) {
++    sources += [
++      "http/http_auth_sspi_win_unittest.cc",
++      "http/mock_sspi_library_win.cc",
++      "http/mock_sspi_library_win.h",
++    ]
++  } else {
+     sources += [
+       "http/http_auth_handler_ntlm_portable_unittest.cc",
+       "ntlm/ntlm_buffer_reader_unittest.cc",
+@@ -3786,7 +3824,7 @@ target(_test_target_type, "net_unittests") {
+         "//base/version_info",
+         "//net/data/ssl/chrome_root_store:gen_signer_set_inc",
+       ]
+-      if (is_win) {
++      if (is_win && !phone81_port) {
+         sources += [ "cert/internal/trust_store_win_unittest.cc" ]
+         sources += [ "cert/internal/path_builder_trust_store_win_unittest.cc" ]
+         libs += [ "crypt32.lib" ]
+diff --git a/net/base/file_stream_context.cc b/net/base/file_stream_context.cc
+index e3e90c4..7c7460f 100644
+--- a/net/base/file_stream_context.cc
++++ b/net/base/file_stream_context.cc
+@@ -71,8 +71,8 @@ void FileStream::Context::Orphan() {
+ 
+   if (!async_in_progress_) {
+     CloseAndDelete();
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+   } else if (file_.IsValid()) {
+-#if BUILDFLAG(IS_WIN)
+     CancelIo(file_.GetPlatformFile());
+ #endif
+   }
+diff --git a/net/base/file_stream_context.h b/net/base/file_stream_context.h
+index fd7ddf0..65ed2a5 100644
+--- a/net/base/file_stream_context.h
++++ b/net/base/file_stream_context.h
+@@ -53,9 +53,9 @@ namespace net {
+ class IOBuffer;
+ 
+ // Implementation for a FileStream. See file_stream.h for documentation.
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+ class FileStream::Context : public base::MessagePumpForIO::IOHandler {
+-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
++#else
+ class FileStream::Context {
+ #endif
+ 
+@@ -69,9 +69,9 @@ class FileStream::Context {
+   Context(base::File file, scoped_refptr<base::TaskRunner> task_runner);
+   Context(const Context&) = delete;
+   Context& operator=(const Context&) = delete;
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+   ~Context() override;
+-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
++#else
+   ~Context();
+ #endif
+ 
+@@ -169,7 +169,13 @@ class FileStream::Context {
+ 
+   void OnFileOpened();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1)
++  enum class Operation { kRead, kWrite };
++  int PostFileOperation(Operation operation, IOBuffer* buf, int buf_len,
++                        CompletionOnceCallback callback);
++  IOResult RunFileOperation(Operation operation, scoped_refptr<IOBuffer> buf,
++                            int buf_len);
++#elif BUILDFLAG(IS_WIN)
+   void IOCompletionIsPending(CompletionOnceCallback callback, IOBuffer* buf);
+ 
+   // Implementation of MessagePumpForIO::IOHandler.
+@@ -233,7 +239,10 @@ class FileStream::Context {
+   bool orphaned_ = false;
+   const scoped_refptr<base::TaskRunner> task_runner_;
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1)
++  // Only accessed on the worker, with at most one operation outstanding.
++  int64_t file_offset_ = 0;
++#elif BUILDFLAG(IS_WIN)
+   base::MessagePumpForIO::IOContext io_context_;
+   CompletionOnceCallback callback_;
+   scoped_refptr<IOBuffer> in_flight_buf_;
+diff --git a/net/base/file_stream_context_win.cc b/net/base/file_stream_context_win.cc
+index f576847..d9b4fd7 100644
+--- a/net/base/file_stream_context_win.cc
++++ b/net/base/file_stream_context_win.cc
+@@ -9,6 +9,10 @@
+ #include <utility>
+ 
+ #include "base/files/file_path.h"
++#if defined(WINUWP_8_1)
++#include "base/win/scoped_handle.h"
++#include "base/numerics/checked_math.h"
++#endif
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+ #include "base/logging.h"
+@@ -21,6 +25,91 @@
+ 
+ namespace net {
+ 
++#if defined(WINUWP_8_1)
++
++FileStream::Context::Context(scoped_refptr<base::TaskRunner> task_runner)
++    : Context(base::File(), std::move(task_runner)) {}
++
++FileStream::Context::Context(base::File file,
++                             scoped_refptr<base::TaskRunner> task_runner)
++    : file_(std::move(file)), task_runner_(std::move(task_runner)) {}
++
++FileStream::Context::~Context() = default;
++
++void FileStream::Context::OnFileOpened() {
++  // Each operation has its own event. No completion port registration is needed.
++  file_offset_ = 0;
++}
++
++int FileStream::Context::Read(IOBuffer* buf, int buf_len,
++                              CompletionOnceCallback callback) {
++  return PostFileOperation(Operation::kRead, buf, buf_len, std::move(callback));
++}
++
++int FileStream::Context::Write(IOBuffer* buf, int buf_len,
++                               CompletionOnceCallback callback) {
++  return PostFileOperation(Operation::kWrite, buf, buf_len, std::move(callback));
++}
++
++int FileStream::Context::PostFileOperation(Operation operation, IOBuffer* buf,
++                                           int buf_len,
++                                           CompletionOnceCallback callback) {
++  DCHECK(!async_in_progress_);
++  if (!task_runner_->PostTaskAndReplyWithResult(
++          FROM_HERE, base::BindOnce(&Context::RunFileOperation,
++                                    base::Unretained(this), operation,
++                                    base::WrapRefCounted(buf), buf_len),
++          base::BindOnce(&Context::OnAsyncCompleted, base::Unretained(this),
++                         std::move(callback)))) {
++    return ERR_FAILED;
++  }
++  async_in_progress_ = true;
++  return ERR_IO_PENDING;
++}
++
++FileStream::Context::IOResult FileStream::Context::RunFileOperation(
++    Operation operation, scoped_refptr<IOBuffer> buf, int buf_len) {
++  // Phone lacks file completion ports and CancelIo. Retain the context and
++  // buffer until this worker has observed the terminal result, even if orphaned.
++  base::win::ScopedHandle event(
++      ::CreateEventExW(nullptr, nullptr, CREATE_EVENT_MANUAL_RESET,
++                       EVENT_MODIFY_STATE | SYNCHRONIZE));
++  if (!event.is_valid()) {
++    return IOResult::FromOSError(::GetLastError());
++  }
++  OVERLAPPED overlapped = {};
++  overlapped.Offset = static_cast<DWORD>(file_offset_);
++  overlapped.OffsetHigh = static_cast<DWORD>(file_offset_ >> 32);
++  overlapped.hEvent = event.get();
++  DWORD bytes = 0;
++  const HANDLE file = file_.GetPlatformFile();
++  const bool read = operation == Operation::kRead;
++  BOOL ok = read ? ::ReadFile(file, buf->data(), buf_len, &bytes, &overlapped)
++                 : ::WriteFile(file, buf->data(), buf_len, &bytes, &overlapped);
++  if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
++    ok = ::GetOverlappedResultEx(file, &overlapped, &bytes, INFINITE, FALSE);
++  }
++  if (!ok) {
++    const DWORD error = ::GetLastError();
++    if (read && error == ERROR_HANDLE_EOF) {
++      return IOResult(0, 0);
++    }
++    return IOResult::FromOSError(error);
++  }
++  file_offset_ = base::CheckAdd(file_offset_, bytes).ValueOrDie();
++  return IOResult(bytes, 0);
++}
++
++FileStream::Context::IOResult FileStream::Context::SeekFileImpl(int64_t offset) {
++  file_offset_ = offset;
++  return IOResult(offset, 0);
++}
++
++int FileStream::Context::ConnectNamedPipe(CompletionOnceCallback callback) {
++  return ERR_NOT_IMPLEMENTED;
++}
++
++#else
+ namespace {
+ 
+ void SetOffset(OVERLAPPED* overlapped, const LARGE_INTEGER& offset) {
+@@ -247,4 +336,6 @@ void FileStream::Context::ReadAsyncResult(BOOL read_file_ret,
+   }
+ }
+ 
++#endif  // defined(WINUWP_8_1)
++
+ }  // namespace net
+diff --git a/net/base/ip_endpoint.cc b/net/base/ip_endpoint.cc
+index 964df2c..cb7d151 100644
+--- a/net/base/ip_endpoint.cc
++++ b/net/base/ip_endpoint.cc
+@@ -26,11 +26,13 @@
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include <winsock2.h>
++#if !defined(WINUWP_8_1)
+ #include <winternl.h>
+ 
+ #include <netioapi.h>
+ #include <ntstatus.h>
+ #include <ws2bth.h>
++#endif
+ 
+ #include "net/base/winsock_util.h"  // For kBluetoothAddressSize
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+@@ -74,7 +76,14 @@ std::optional<uint32_t> IPEndPoint::ScopeIdFromInterfaceName(
+   if (name_to_index_func_for_testing_) {
+     index = name_to_index_func_for_testing_(name.c_str());
+   } else {
++#if defined(WINUWP_8_1)
++    // Phone exposes Winsock scope IDs but no interface-name lookup API.
++    if (!base::StringToUint(name, &index)) {
++      return 0;
++    }
++#else
+     index = if_nametoindex(name.c_str());
++#endif
+   }
+ 
+   return index;
+@@ -88,12 +97,21 @@ base::Value IPEndPoint::ScopeIdToInterfaceNameValue(
+   }
+ 
+   char* name = nullptr;
++#if defined(WINUWP_8_1)
++  if (!index_to_name_func_for_testing_) {
++    return base::Value(base::NumberToString(*scope_id));
++  }
++  char buf[256] = {};
++#else
+   char buf[IF_NAMESIZE + 1] = {0};
++#endif
+   if (index_to_name_func_for_testing_) {
+     name = index_to_name_func_for_testing_(scope_id.value(),
+                                            base::span<char>(buf));
++#if !defined(WINUWP_8_1)
+   } else {
+     name = if_indextoname(scope_id.value(), buf);
++#endif
+   }
+ 
+   if (!name) {
+@@ -175,7 +193,7 @@ int IPEndPoint::GetSockAddrFamily() const {
+       return AF_INET;
+     case IPAddress::kIPv6AddressSize:
+       return AF_INET6;
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+     case kBluetoothAddressSize:
+       return AF_BTH;
+ #endif
+@@ -259,7 +277,7 @@ bool IPEndPoint::FromSockAddr(const struct sockaddr* sock_addr,
+       }
+       return true;
+     }
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+     case AF_BTH: {
+       if (sock_addr_len < static_cast<socklen_t>(sizeof(SOCKADDR_BTH)))
+         return false;
+diff --git a/net/base/network_change_notifier.cc b/net/base/network_change_notifier.cc
+index 6294bbe..7fcd5b3 100644
+--- a/net/base/network_change_notifier.cc
++++ b/net/base/network_change_notifier.cc
+@@ -31,7 +31,9 @@
+ #include "net/url_request/url_request.h"
+ #include "url/gurl.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#include "net/base/network_change_notifier_phone.h"
++#elif BUILDFLAG(IS_WIN)
+ #include "net/base/network_change_notifier_win.h"
+ #elif BUILDFLAG(IS_LINUX)
+ #include "net/base/network_change_notifier_linux.h"
+@@ -291,7 +293,9 @@ std::unique_ptr<NetworkChangeNotifier> NetworkChangeNotifier::CreateIfNeeded(
+         initial_type, initial_subtype);
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++  return std::make_unique<NetworkChangeNotifierPhone>();
++#elif BUILDFLAG(IS_WIN)
+   std::unique_ptr<NetworkChangeNotifierWin> network_change_notifier =
+       std::make_unique<NetworkChangeNotifierWin>();
+   network_change_notifier->WatchForAddressChange();
+diff --git a/net/base/network_change_notifier_phone.cc b/net/base/network_change_notifier_phone.cc
+new file mode 100644
+index 0000000..6b005a0
+--- /dev/null
++++ b/net/base/network_change_notifier_phone.cc
+@@ -0,0 +1,166 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "net/base/network_change_notifier_phone.h"
++
++#include <wrl/event.h>
++
++#include "base/functional/bind.h"
++#include "base/task/single_thread_task_runner.h"
++#include "net/base/network_information_phone.h"
++
++namespace net {
++namespace {
++using namespace phone::connectivity;
++using phone::ComPtr;
++using N = NetworkChangeNotifier;
++
++N::ConnectionType ProfileType(IConnectionProfile* profile) {
++  ComPtr<INetworkAdapter> adapter;
++  profile->get_NetworkAdapter(&adapter);
++  auto type = phone::AdapterType(adapter.Get());
++  if (type != N::CONNECTION_UNKNOWN) {
++    return type;
++  }
++  ComPtr<IConnectionProfile2> profile2;
++  ComPtr<IWwanConnectionProfileDetails> mobile;
++  WwanDataClass data;
++  if (FAILED(profile->QueryInterface(IID_PPV_ARGS(&profile2))) ||
++      FAILED(profile2->get_WwanConnectionProfileDetails(&mobile)) || !mobile ||
++      FAILED(mobile->GetCurrentDataClass(&data))) {
++    return N::CONNECTION_UNKNOWN;
++  }
++  if (data & WwanDataClass_LteAdvanced) {
++    return N::CONNECTION_4G;
++  }
++  if (data & (WwanDataClass_Umts | WwanDataClass_Hsdpa | WwanDataClass_Hsupa |
++              WwanDataClass_Cdma1xEvdo | WwanDataClass_Cdma1xEvdoRevA |
++              WwanDataClass_Cdma1xEvdoRevB | WwanDataClass_Cdma1xEvdv |
++              WwanDataClass_Cdma3xRtt | WwanDataClass_CdmaUmb)) {
++    return N::CONNECTION_3G;
++  }
++  if (data &
++      (WwanDataClass_Gprs | WwanDataClass_Edge | WwanDataClass_Cdma1xRtt)) {
++    return N::CONNECTION_2G;
++  }
++  return N::CONNECTION_UNKNOWN;
++}
++
++N::ConnectionCost ProfileCost(IConnectionProfile* profile) {
++  ComPtr<IConnectionCost> cost;
++  NetworkCostType kind;
++  if (FAILED(profile->GetConnectionCost(&cost)) || !cost ||
++      FAILED(cost->get_NetworkCostType(&kind))) {
++    return N::CONNECTION_COST_UNKNOWN;
++  }
++  if (kind == NetworkCostType_Unrestricted) {
++    return N::CONNECTION_COST_UNMETERED;
++  }
++  if (kind == NetworkCostType_Variable || kind == NetworkCostType_Fixed) {
++    return N::CONNECTION_COST_METERED;
++  }
++  return N::CONNECTION_COST_UNKNOWN;
++}
++}  // namespace
++
++struct NetworkChangeNotifierPhone::Subscription {
++  phone::NetworkApartment apartment;
++  ComPtr<INetworkInformationStatics> info;
++  EventRegistrationToken token{};
++  bool subscribed = false;
++
++  ~Subscription() {
++    if (subscribed) {
++      info->remove_NetworkStatusChanged(token);
++    }
++  }
++};
++
++NetworkChangeNotifierPhone::NetworkChangeNotifierPhone() {
++  Refresh(false);
++}
++
++NetworkChangeNotifierPhone::~NetworkChangeNotifierPhone() {
++  ClearGlobalPointer();
++}
++
++void NetworkChangeNotifierPhone::Refresh(bool status_event) {
++  if (!subscription_ || !subscription_->apartment.ready()) {
++    subscription_ = std::make_unique<Subscription>();
++  }
++  auto& state = *subscription_;
++  if (state.apartment.ready() && !state.info) {
++    state.info = phone::NetworkInformation();
++  }
++  if (state.info && !state.subscribed) {
++    auto handler = Microsoft::WRL::Callback<INetworkStatusChangedEventHandler>(
++        [runner = base::SingleThreadTaskRunner::GetCurrentDefault(),
++         weak = weak_factory_.GetWeakPtr()](IInspectable*) -> HRESULT {
++          runner->PostTask(
++              FROM_HERE,
++              base::BindOnce(&NetworkChangeNotifierPhone::Refresh, weak, true));
++          return S_OK;
++        });
++    state.subscribed =
++        handler && SUCCEEDED(state.info->add_NetworkStatusChanged(
++                       handler.Get(), &state.token));
++  }
++
++  ConnectionType type = CONNECTION_UNKNOWN;
++  ConnectionCost cost = CONNECTION_COST_UNKNOWN;
++  ComPtr<IConnectionProfile> profile;
++  bool queried = state.info &&
++                 SUCCEEDED(state.info->GetInternetConnectionProfile(&profile));
++  if (queried && !profile) {
++    type = CONNECTION_NONE;
++  } else if (queried) {
++    NetworkConnectivityLevel level;
++    queried = SUCCEEDED(profile->GetNetworkConnectivityLevel(&level));
++    if (queried) {
++      type = level == NetworkConnectivityLevel_None
++                 ? CONNECTION_NONE
++                 : ProfileType(profile.Get());
++      cost = ProfileCost(profile.Get());
++    }
++  }
++
++  bool type_changed = type_.exchange(type) != type;
++  bool cost_changed = cost_.exchange(cost) != cost;
++  if (status_event || type_changed) {
++    NotifyObserversOfIPAddressChange();
++  }
++  if (type_changed) {
++    NotifyObserversOfConnectionTypeChange();
++    double bandwidth;
++    ConnectionType bandwidth_type;
++    GetMaxBandwidthAndConnectionType(&bandwidth, &bandwidth_type);
++    NotifyObserversOfMaxBandwidthChange(bandwidth, bandwidth_type);
++  }
++  if (cost_changed) {
++    NotifyObserversOfConnectionCostChange();
++  }
++  if (!queried || !state.subscribed) {
++    if (!queried) {
++      // Retry activation and subscription after a disconnected WinRT factory.
++      profile.Reset();
++      subscription_.reset();
++    }
++    retry_.Start(FROM_HERE, base::Seconds(10),
++                 base::BindOnce(&NetworkChangeNotifierPhone::Refresh,
++                                weak_factory_.GetWeakPtr(), false));
++  } else {
++    retry_.Stop();
++  }
++}
++
++NetworkChangeNotifier::ConnectionType
++NetworkChangeNotifierPhone::GetCurrentConnectionType() const {
++  return type_.load();
++}
++
++NetworkChangeNotifier::ConnectionCost
++NetworkChangeNotifierPhone::GetCurrentConnectionCost() {
++  return cost_.load();
++}
++}  // namespace net
+diff --git a/net/base/network_change_notifier_phone.h b/net/base/network_change_notifier_phone.h
+new file mode 100644
+index 0000000..310154a
+--- /dev/null
++++ b/net/base/network_change_notifier_phone.h
+@@ -0,0 +1,37 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef NET_BASE_NETWORK_CHANGE_NOTIFIER_PHONE_H_
++#define NET_BASE_NETWORK_CHANGE_NOTIFIER_PHONE_H_
++
++#include <atomic>
++#include <memory>
++
++#include "base/memory/weak_ptr.h"
++#include "base/timer/timer.h"
++#include "net/base/network_change_notifier.h"
++
++namespace net {
++
++class NetworkChangeNotifierPhone final : public NetworkChangeNotifier {
++ public:
++  NetworkChangeNotifierPhone();
++  ~NetworkChangeNotifierPhone() override;
++
++ private:
++  struct Subscription;
++  void Refresh(bool status_event);
++  ConnectionType GetCurrentConnectionType() const override;
++  ConnectionCost GetCurrentConnectionCost() override;
++
++  std::atomic<ConnectionType> type_{CONNECTION_UNKNOWN};
++  std::atomic<ConnectionCost> cost_{CONNECTION_COST_UNKNOWN};
++  std::unique_ptr<Subscription> subscription_;
++  base::OneShotTimer retry_;
++  base::WeakPtrFactory<NetworkChangeNotifierPhone> weak_factory_{this};
++};
++
++}  // namespace net
++
++#endif  // NET_BASE_NETWORK_CHANGE_NOTIFIER_PHONE_H_
+diff --git a/net/base/network_information_phone.h b/net/base/network_information_phone.h
+new file mode 100644
+index 0000000..b5aaea4
+--- /dev/null
++++ b/net/base/network_information_phone.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef NET_BASE_NETWORK_INFORMATION_PHONE_H_
++#define NET_BASE_NETWORK_INFORMATION_PHONE_H_
++
++#include <windows.networking.connectivity.h>
++#include <windows.networking.h>
++#include <wrl/client.h>
++
++#include "base/win/core_winrt_util.h"
++#include "net/base/network_change_notifier.h"
++
++namespace net::phone {
++namespace connectivity = ABI::Windows::Networking::Connectivity;
++using Microsoft::WRL::ComPtr;
++
++// Network helpers run on both application and worker threads. Reuse an
++// existing STA if one is present and balance only successful initializations.
++class NetworkApartment {
++ public:
++  NetworkApartment() : hr_(::RoInitialize(RO_INIT_MULTITHREADED)) {}
++  ~NetworkApartment() {
++    if (SUCCEEDED(hr_)) {
++      ::RoUninitialize();
++    }
++  }
++  bool ready() const { return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE; }
++
++ private:
++  const HRESULT hr_;
++};
++
++inline ComPtr<connectivity::INetworkInformationStatics> NetworkInformation() {
++  ComPtr<connectivity::INetworkInformationStatics> info;
++  base::win::GetActivationFactory<
++      connectivity::INetworkInformationStatics,
++      RuntimeClass_Windows_Networking_Connectivity_NetworkInformation>(
++      info.GetAddressOf());
++  return info;
++}
++
++inline NetworkChangeNotifier::ConnectionType AdapterType(
++    connectivity::INetworkAdapter* adapter) {
++  unsigned int iana = 0;
++  if (adapter && SUCCEEDED(adapter->get_IanaInterfaceType(&iana))) {
++    if (iana == 71) {
++      return NetworkChangeNotifier::CONNECTION_WIFI;
++    }
++    if (iana == 6) {
++      return NetworkChangeNotifier::CONNECTION_ETHERNET;
++    }
++  }
++  return NetworkChangeNotifier::CONNECTION_UNKNOWN;
++}
++}  // namespace net::phone
++#endif  // NET_BASE_NETWORK_INFORMATION_PHONE_H_
+diff --git a/net/base/network_interfaces_phone.cc b/net/base/network_interfaces_phone.cc
+new file mode 100644
+index 0000000..e3ba341
+--- /dev/null
++++ b/net/base/network_interfaces_phone.cc
+@@ -0,0 +1,147 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <map>
++
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/stringprintf.h"
++#include "net/base/network_information_phone.h"
++#include "net/base/network_interfaces.h"
++
++namespace net {
++namespace {
++using phone::ComPtr;
++using namespace phone::connectivity;
++namespace networking = ABI::Windows::Networking;
++
++// WinRT associates IP addresses with a persistent adapter GUID. A numeric
++// socket interface index, when exposed, is the zone suffix of its IPv6 address.
++bool ReadHost(networking::IHostName* host,
++              NetworkInterfaceList& list,
++              std::map<std::string, uint32_t>& indices) {
++  networking::HostNameType kind;
++  if (FAILED(host->get_Type(&kind))) {
++    return false;
++  }
++  if (kind != networking::HostNameType_Ipv4 &&
++      kind != networking::HostNameType_Ipv6) {
++    return true;
++  }
++
++  ComPtr<IIPInformation> ip_info;
++  if (FAILED(host->get_IPInformation(&ip_info))) {
++    return false;
++  }
++  if (!ip_info) {
++    return true;
++  }
++
++  HSTRING raw_name = nullptr;
++  if (FAILED(host->get_CanonicalName(&raw_name))) {
++    return false;
++  }
++  std::string name = base::win::ScopedHString(raw_name).GetAsUTF8();
++  uint32_t index = 0;
++  size_t zone = name.find('%');
++  if (zone != std::string::npos) {
++    if (kind != networking::HostNameType_Ipv6 ||
++        !base::StringToUint(std::string_view(name).substr(zone + 1), &index)) {
++      return false;
++    }
++    name.resize(zone);
++  }
++  auto address = IPAddress::FromIPLiteral(name);
++  if (!address) {
++    return false;
++  }
++  if (address->IsLoopback() || address->IsZero()) {
++    return true;
++  }
++
++  ComPtr<INetworkAdapter> adapter;
++  GUID id;
++  ComPtr<__FIReference_1_byte> prefix;
++  BYTE length;
++  if (FAILED(ip_info->get_NetworkAdapter(&adapter)) || !adapter ||
++      FAILED(adapter->get_NetworkAdapterId(&id)) ||
++      FAILED(ip_info->get_PrefixLength(&prefix)) || !prefix ||
++      FAILED(prefix->get_Value(&length)) || length > address->size() * 8) {
++    return false;
++  }
++
++  auto guid = base::StringPrintf(
++      "{%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}", id.Data1, id.Data2,
++      id.Data3, id.Data4[0], id.Data4[1], id.Data4[2], id.Data4[3], id.Data4[4],
++      id.Data4[5], id.Data4[6], id.Data4[7]);
++  if (index) {
++    indices[guid] = index;
++  }
++  list.emplace_back(guid, guid, index, phone::AdapterType(adapter.Get()),
++                    *address, length, IP_ADDRESS_ATTRIBUTE_NONE);
++  return true;
++}
++}  // namespace
++
++bool GetNetworkList(NetworkInterfaceList* networks, int policy) {
++  phone::NetworkApartment apartment;
++  if (!apartment.ready()) {
++    return false;
++  }
++  auto info = phone::NetworkInformation();
++  ComPtr<__FIVectorView_1_Windows__CNetworking__CHostName> hosts;
++  unsigned int count;
++  if (!info || FAILED(info->GetHostNames(&hosts)) || !hosts ||
++      FAILED(hosts->get_Size(&count))) {
++    return false;
++  }
++
++  NetworkInterfaceList found;
++  std::map<std::string, uint32_t> indices;
++  bool entry_failed = false;
++  for (unsigned int i = 0; i < count; ++i) {
++    ComPtr<networking::IHostName> host;
++    if (FAILED(hosts->GetAt(i, &host)) || !host ||
++        !ReadHost(host.Get(), found, indices)) {
++      entry_failed = true;
++    }
++  }
++  if (entry_failed && found.empty()) {
++    return false;
++  }
++  for (auto& entry : found) {
++    auto it = indices.find(entry.name);
++    // An IPv6 zone is usable for IPv6 sockets. IPv4 can use a different
++    // index on Windows, so do not synthesize it from the IPv6 index.
++    if (entry.address.IsIPv6() && it != indices.end()) {
++      entry.interface_index = it->second;
++    }
++  }
++  networks->insert(networks->end(), found.begin(), found.end());
++  return true;
++}
++
++std::string GetWifiSSID() {
++  phone::NetworkApartment apartment;
++  if (!apartment.ready()) {
++    return {};
++  }
++  auto info = phone::NetworkInformation();
++  ComPtr<IConnectionProfile> profile;
++  ComPtr<IConnectionProfile2> profile2;
++  ComPtr<IWlanConnectionProfileDetails> wlan;
++  HSTRING ssid = nullptr;
++  if (!info || FAILED(info->GetInternetConnectionProfile(&profile)) ||
++      !profile || FAILED(profile.As(&profile2)) ||
++      FAILED(profile2->get_WlanConnectionProfileDetails(&wlan)) || !wlan ||
++      FAILED(wlan->GetConnectedSsid(&ssid))) {
++    return {};
++  }
++  return base::win::ScopedHString(ssid).GetAsUTF8();
++}
++
++std::unique_ptr<ScopedWifiOptions> SetWifiOptions(int options) {
++  // Desktop WLAN radio configuration is unavailable to phone applications.
++  return nullptr;
++}
++}  // namespace net
+diff --git a/net/base/winsock_util.cc b/net/base/winsock_util.cc
+index aff59bc..1adbbbd 100644
+--- a/net/base/winsock_util.cc
++++ b/net/base/winsock_util.cc
+@@ -9,13 +9,21 @@
+ namespace net {
+ 
+ bool ResetEventIfSignaled(WSAEVENT hEvent) {
++#if defined(WINUWP_8_1)
++  DWORD wait_rv = WaitForSingleObjectEx(hEvent, 0, FALSE);
++#else
+   DWORD wait_rv = WaitForSingleObject(hEvent, 0);
++#endif
+   if (wait_rv == WAIT_TIMEOUT)
+     return false;  // The event object is not signaled.
+   DCHECK_EQ(wait_rv, static_cast<DWORD>(WAIT_OBJECT_0));
++#if defined(WINUWP_8_1)
++  return wait_rv == WAIT_OBJECT_0 && WSAResetEvent(hEvent);
++#else
+   BOOL ok = WSAResetEvent(hEvent);
+   DCHECK(ok);
+   return true;
++#endif
+ }
+ 
+ }  // namespace net
+diff --git a/net/cert/internal/system_trust_store.cc b/net/cert/internal/system_trust_store.cc
+index b8462e0..c43ca95 100644
+--- a/net/cert/internal/system_trust_store.cc
++++ b/net/cert/internal/system_trust_store.cc
+@@ -25,6 +25,10 @@
+ #include "third_party/boringssl/src/pki/trust_store_collection.h"
+ #include "third_party/boringssl/src/pki/trust_store_in_memory.h"
+ 
++#if defined(WINUWP_8_1)
++#include <winapifamily.h>
++#endif
++
+ #if BUILDFLAG(USE_NSS_SERVER_CERTS)
+ #include "net/cert/internal/trust_store_nss.h"
+ #elif BUILDFLAG(IS_MAC)
+@@ -35,7 +39,8 @@
+ #include "net/cert/x509_util_apple.h"
+ #elif BUILDFLAG(IS_FUCHSIA)
+ #include "third_party/boringssl/src/include/openssl/pool.h"
+-#elif BUILDFLAG(IS_WIN)
++#elif BUILDFLAG(IS_WIN) && \
++    !(defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
+ #include "net/cert/internal/trust_store_win.h"
+ #elif BUILDFLAG(IS_ANDROID)
+ #include "net/cert/internal/trust_store_android.h"
+@@ -350,6 +355,16 @@ std::unique_ptr<SystemTrustStore> CreateSslSystemTrustStore() {
+   return std::make_unique<SystemTrustStoreFuchsia>();
+ }
+ 
++#elif defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++
++// The Phone SDK does not expose the desktop CryptoAPI certificate stores.
++std::unique_ptr<SystemTrustStore> CreateSslSystemTrustStoreChromeRoot(
++    std::unique_ptr<TrustStoreChrome> chrome_root) {
++  return CreateChromeOnlySystemTrustStore(std::move(chrome_root));
++}
++
++void InitializeTrustStoreWinSystem() {}
++
+ #elif BUILDFLAG(IS_WIN)
+ 
+ namespace {
+diff --git a/net/disk_cache/disk_cache.cc b/net/disk_cache/disk_cache.cc
+index 0c4e347..247e3e3 100644
+--- a/net/disk_cache/disk_cache.cc
++++ b/net/disk_cache/disk_cache.cc
+@@ -21,6 +21,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/task/thread_pool/thread_pool_instance.h"
+ #include "base/time/time.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "build/build_config.h"
+ #include "build/buildflag.h"
+ #include "net/base/cache_type.h"
+@@ -28,7 +29,9 @@
+ #include "net/base/net_errors.h"
+ #include "net/disk_cache/backend_cleanup_tracker.h"
+ #include "net/disk_cache/basic_cache_file.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "net/disk_cache/blockfile/backend_impl.h"
++#endif
+ #include "net/disk_cache/buildflags.h"
+ #include "net/disk_cache/cache_encryption_delegate.h"
+ #include "net/disk_cache/cache_util.h"
+@@ -158,7 +161,7 @@ CacheCreator::CacheCreator(
+ CacheCreator::~CacheCreator() = default;
+ 
+ void CacheCreator::Run() {
+-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
++#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || BASE_WIN_IS_PHONE_8_1
+   static const bool kSimpleBackendIsDefault = true;
+ #else
+   static const bool kSimpleBackendIsDefault = false;
+@@ -211,8 +214,8 @@ void CacheCreator::Run() {
+   }
+ #endif  // ENABLE_DISK_CACHE_SQL_BACKEND
+ 
+-// Avoid references to blockfile functions on Android to reduce binary size.
+-#if BUILDFLAG(IS_ANDROID)
++// Phone lacks the memory-mapped files required by the blockfile backend.
++#if BUILDFLAG(IS_ANDROID) || BASE_WIN_IS_PHONE_8_1
+   FailAttempt();
+ #else
+   auto cache = std::make_unique<disk_cache::BackendImpl>(
+@@ -445,6 +448,16 @@ BackendResult CreateCacheBackendImpl(
+     }
+   }
+ 
++#if BASE_WIN_IS_PHONE_8_1
++  if (backend_type == net::CACHE_BACKEND_BLOCKFILE) {
++    if (post_cleanup_callback) {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, std::move(post_cleanup_callback));
++    }
++    return BackendResult::MakeError(net::ERR_NOT_IMPLEMENTED);
++  }
++#endif
++
+   bool had_post_cleanup_callback = !post_cleanup_callback.is_null();
+   // As document in disk_cache.h, `had_post_cleanup_callback` is not supported
+   // for net::DISK_CACHE. Note: When kEnableBackendCleanupTrackerOnHttpCache is
+@@ -533,11 +546,17 @@ void FlushCacheThreadForTesting() {
+   // For simple backend.
+   base::ThreadPoolInstance::Get()->FlushForTesting();
+ 
++#if !BASE_WIN_IS_PHONE_8_1
+   // Block backend.
+   BackendImpl::FlushForTesting();
++#endif
+ }
+ 
+ void FlushCacheThreadAsynchronouslyForTesting(base::OnceClosure callback) {
++#if BASE_WIN_IS_PHONE_8_1
++  base::ThreadPoolInstance::Get()->FlushAsyncForTesting(  // IN-TEST
++      base::BindPostTaskToCurrentDefault(std::move(callback)));
++#else
+   auto repeating_callback = base::BarrierClosure(2, std::move(callback));
+ 
+   // For simple backend.
+@@ -546,6 +565,7 @@ void FlushCacheThreadAsynchronouslyForTesting(base::OnceClosure callback) {
+ 
+   // Block backend.
+   BackendImpl::FlushAsynchronouslyForTesting(repeating_callback);
++#endif
+ }
+ 
+ void WaitForBackendCleanupForTesting(const base::FilePath& path,  // IN-TEST
+diff --git a/net/disk_cache/simple/simple_util_win.cc b/net/disk_cache/simple/simple_util_win.cc
+index c3c79e2..7920be8 100644
+--- a/net/disk_cache/simple/simple_util_win.cc
++++ b/net/disk_cache/simple/simple_util_win.cc
+@@ -32,7 +32,7 @@ bool SimpleCacheDeleteFile(const base::FilePath& path) {
+                                                     base::RandUint64()));
+ 
+   bool rename_succeeded =
+-      !!MoveFile(path.value().c_str(), rename_target.value().c_str());
++      !!MoveFileExW(path.value().c_str(), rename_target.value().c_str(), 0);
+   if (rename_succeeded)
+     return base::DeleteFile(rename_target);
+ 
+diff --git a/net/dns/BUILD.gn b/net/dns/BUILD.gn
+index 5f41620..d63c34d 100644
+--- a/net/dns/BUILD.gn
++++ b/net/dns/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//net/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ import("//third_party/protobuf/proto_library.gni")
+ 
+@@ -126,11 +127,15 @@ source_set("dns") {
+   ]
+ 
+   if (is_win) {
+-    sources += [
+-      "address_sorter_win.cc",
+-      "dns_config_service_win.cc",
+-      "dns_config_service_win.h",
+-    ]
++    sources += [ "address_sorter_win.cc" ]
++    if (phone81_port) {
++      sources += [ "dns_config_service_phone.cc" ]
++    } else {
++      sources += [
++        "dns_config_service_win.cc",
++        "dns_config_service_win.h",
++      ]
++    }
+   }
+ 
+   if (is_mac) {
+@@ -475,7 +480,7 @@ source_set("tests") {
+     "system_dns_config_change_notifier_unittest.cc",
+   ]
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [ "dns_config_service_win_unittest.cc" ]
+   }
+ 
+diff --git a/net/dns/dns_config_service_phone.cc b/net/dns/dns_config_service_phone.cc
+new file mode 100644
+index 0000000..c9a1544
+--- /dev/null
++++ b/net/dns/dns_config_service_phone.cc
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "net/dns/dns_config_service.h"
++
++namespace net {
++
++std::unique_ptr<DnsConfigService> DnsConfigService::CreateSystemService() {
++  // Phone exposes name resolution through Winsock, but does not expose the
++  // per-interface DNS servers and suffix policy required by DnsConfig. Leave
++  // that configuration unavailable so address lookups use the system resolver.
++  // NetworkChangeNotifierPhone observes NetworkStatusChanged, which causes
++  // HostResolverManager to invalidate cached addresses and outstanding jobs.
++  return nullptr;
++}
++
++}  // namespace net
+diff --git a/net/dns/host_resolver_system_task.cc b/net/dns/host_resolver_system_task.cc
+index 19b572c..9b4b03a 100644
+--- a/net/dns/host_resolver_system_task.cc
++++ b/net/dns/host_resolver_system_task.cc
+@@ -138,6 +138,16 @@ base::DictValue NetLogHostResolverSystemTaskFailedParams(
+     dict.Set("os_error", os_error);
+ #if BUILDFLAG(IS_WIN)
+     // Map the error code to a human-readable string.
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++    wchar_t message[512];
++    DWORD length = ::FormatMessageW(
++        FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
++        os_error, 0, message, std::size(message), nullptr);
++    if (length) {
++      dict.Set("os_error_string",
++               base::WideToUTF8(std::wstring_view(message, length)));
++    }
++#else
+     LPWSTR error_string = nullptr;
+     FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                   nullptr,  // Use the internal message table.
+@@ -148,6 +158,7 @@ base::DictValue NetLogHostResolverSystemTaskFailedParams(
+                   nullptr);  // Arguments (unused).
+     dict.Set("os_error_string", base::WideToUTF8(error_string));
+     LocalFree(error_string);
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+     dict.Set("os_error_string", gai_strerror(os_error));
+ #endif
+@@ -609,8 +620,18 @@ int SystemHostResolverCall(const std::string& host,
+   // See crbug.com/1176970. Flag not documented (other than the declaration
+   // comment in ws2def.h) but confirmed by Microsoft to work for this purpose
+   // and be safe.
+-  if (host_resolver_flags & HOST_RESOLVER_AVOID_MULTICAST)
++  if (host_resolver_flags & HOST_RESOLVER_AVOID_MULTICAST) {
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++    // Phone getaddrinfo cannot disable multicast. Preserve the caller's
++    // privacy constraint instead of silently broadening the lookup.
++    if (os_error_opt) {
++      *os_error_opt = WSAEOPNOTSUPP;
++    }
++    return ERR_NOT_IMPLEMENTED;
++#else
+     hints.ai_flags |= AI_DNS_ONLY;
++#endif
++  }
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+   // Restrict result set to only this socket type to avoid duplicates.
+diff --git a/net/dns/public/BUILD.gn b/net/dns/public/BUILD.gn
+index ba3b5b2..b016d1b 100644
+--- a/net/dns/public/BUILD.gn
++++ b/net/dns/public/BUILD.gn
+@@ -2,6 +2,8 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
++
+ if (is_android) {
+   import("//build/config/android/rules.gni")
+ }
+@@ -54,7 +56,7 @@ source_set("public") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [
+       "win_dns_system_settings.cc",
+       "win_dns_system_settings.h",
+@@ -84,7 +86,7 @@ source_set("tests") {
+     sources += [ "resolv_reader_unittest.cc" ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [ "win_dns_system_settings_unittest.cc" ]
+   }
+ 
+diff --git a/net/features.gni b/net/features.gni
+index e8c37c9..54f0c55 100644
+--- a/net/features.gni
++++ b/net/features.gni
+@@ -5,6 +5,7 @@
+ import("//build/config/chrome_build.gni")
+ import("//build/config/cronet/config.gni")
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//extensions/buildflags/buildflags.gni")
+ 
+ declare_args() {
+@@ -19,7 +20,7 @@ declare_args() {
+   # and Chromecast, at least for now. This feature needs configuration
+   # (krb5.conf and so on).
+   # TODO(fuchsia): Enable kerberos on Fuchsia when it's implemented there.
+-  use_kerberos = !is_ios && !is_fuchsia && !is_castos && !is_cast_android
++  use_kerberos = !(is_win && phone81_port) && !is_ios && !is_fuchsia && !is_castos && !is_cast_android
+ 
+   # Do not disable brotli filter by default.
+   disable_brotli_filter = false
+diff --git a/net/http/http_auth_handler_factory.cc b/net/http/http_auth_handler_factory.cc
+index af613ad..e45ba98 100644
+--- a/net/http/http_auth_handler_factory.cc
++++ b/net/http/http_auth_handler_factory.cc
+@@ -174,10 +174,10 @@ HttpAuthHandlerRegistryFactory::Create(
+       kDigestAuthScheme, std::make_unique<HttpAuthHandlerDigest::Factory>());
+ 
+   auto ntlm_factory = std::make_unique<HttpAuthHandlerNTLM::Factory>();
+-#if BUILDFLAG(IS_WIN)
++#if defined(NTLM_SSPI)
+   ntlm_factory->set_sspi_library(
+       base::MakeRefCounted<SSPILibraryDefault>(NTLMSP_NAME));
+-#endif  // BUILDFLAG(IS_WIN)
++#endif  // defined(NTLM_SSPI)
+   registry_factory->RegisterSchemeFactory(kNtlmAuthScheme,
+                                           std::move(ntlm_factory));
+ 
+diff --git a/net/http/http_auth_handler_ntlm.h b/net/http/http_auth_handler_ntlm.h
+index 5c362da..c209210 100644
+--- a/net/http/http_auth_handler_ntlm.h
++++ b/net/http/http_auth_handler_ntlm.h
+@@ -11,9 +11,14 @@
+ #include "base/memory/raw_ptr.h"
+ #include "build/build_config.h"
+ 
++#if defined(WINUWP_8_1)
++#include <winapifamily.h>
++#endif
++
+ // This contains the portable and the SSPI implementations for NTLM.
+ // We use NTLM_SSPI for Windows, and NTLM_PORTABLE for other platforms.
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && \
++    !(defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
+ #define NTLM_SSPI
+ #else
+ #define NTLM_PORTABLE
+diff --git a/net/http/http_auth_ntlm_mechanism.cc b/net/http/http_auth_ntlm_mechanism.cc
+index 31ab460..1e2eea7 100644
+--- a/net/http/http_auth_ntlm_mechanism.cc
++++ b/net/http/http_auth_ntlm_mechanism.cc
+@@ -6,6 +6,10 @@
+ 
+ #include <string_view>
+ 
++#if defined(WINUWP_8_1)
++#include <winapifamily.h>
++#endif
++
+ #include "base/base64.h"
+ #include "base/containers/span.h"
+ #include "base/logging.h"
+@@ -79,9 +83,13 @@ HttpAuthNtlmMechanism::ScopedProcSetter::~ScopedProcSetter() {
+ 
+ HttpAuthNtlmMechanism::HttpAuthNtlmMechanism(
+     const HttpAuthPreferences* http_auth_preferences)
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++    : ntlm_client_(ntlm::NtlmFeatures(/*enable_NTLMv2=*/true)) {}
++#else
+     : ntlm_client_(ntlm::NtlmFeatures(
+           http_auth_preferences ? http_auth_preferences->NtlmV2Enabled()
+                                 : true)) {}
++#endif
+ 
+ HttpAuthNtlmMechanism::~HttpAuthNtlmMechanism() = default;
+ 
+diff --git a/net/http/no_vary_search_cache_storage_file_operations.cc b/net/http/no_vary_search_cache_storage_file_operations.cc
+index 722966a..10da6d8 100644
+--- a/net/http/no_vary_search_cache_storage_file_operations.cc
++++ b/net/http/no_vary_search_cache_storage_file_operations.cc
+@@ -16,6 +16,7 @@
+ #include <type_traits>
+ #include <utility>
+ 
++#include "base/win/windows_phone_8_1.h"
+ #include "base/check_op.h"
+ #include "base/files/file.h"
+ #include "base/files/file_path.h"
+@@ -276,8 +277,15 @@ bool ReplaceFileWithRetries(const base::FilePath& source,
+     if (last_error == base::File::FILE_ERROR_ACCESS_DENIED) {
+       // Attempt to fix permission problems. Avoid doing this by
+       // default because it's not actually atomic.
++#if BASE_WIN_IS_PHONE_8_1
++      WIN32_FILE_ATTRIBUTE_DATA data;
++      if (::GetFileAttributesExW(destination.value().c_str(),
++                                 GetFileExInfoStandard, &data)) {
++        DWORD attrs = data.dwFileAttributes;
++#else
+       DWORD attrs = ::GetFileAttributes(destination.value().c_str());
+       if (attrs != INVALID_FILE_ATTRIBUTES) {
++#endif
+         ::SetFileAttributes(destination.value().c_str(),
+                             attrs & ~FILE_ATTRIBUTE_READONLY);
+       }
+diff --git a/net/proxy_resolution/configured_proxy_resolution_service.cc b/net/proxy_resolution/configured_proxy_resolution_service.cc
+index df2e772..127df63 100644
+--- a/net/proxy_resolution/configured_proxy_resolution_service.cc
++++ b/net/proxy_resolution/configured_proxy_resolution_service.cc
+@@ -9,6 +9,7 @@
+ #include <memory>
+ #include <utility>
+ 
++#include "base/win/windows_phone_8_1.h"
+ #include "base/check.h"
+ #include "base/compiler_specific.h"
+ #include "base/functional/bind.h"
+@@ -48,7 +49,7 @@
+ #include "net/proxy_resolution/proxy_resolver_factory.h"
+ #include "net/url_request/url_request_context.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "net/proxy_resolution/win/proxy_resolver_winhttp.h"
+ #elif BUILDFLAG(IS_APPLE)
+ #include "net/proxy_resolution/proxy_resolver_apple.h"
+@@ -255,7 +256,7 @@ class ProxyResolverFactoryForSystem : public MultiThreadedProxyResolverFactory {
+       const ProxyResolverFactoryForSystem&) = delete;
+ 
+   std::unique_ptr<ProxyResolverFactory> CreateProxyResolverFactory() override {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+     return std::make_unique<ProxyResolverFactoryWinHttp>();
+ #elif BUILDFLAG(IS_APPLE)
+     return std::make_unique<ProxyResolverFactoryApple>();
+@@ -265,7 +266,7 @@ class ProxyResolverFactoryForSystem : public MultiThreadedProxyResolverFactory {
+   }
+ 
+   static bool IsSupported() {
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
++#if (BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1) || BUILDFLAG(IS_APPLE)
+     return true;
+ #else
+     return false;
+diff --git a/net/proxy_resolution/proxy_config_service.cc b/net/proxy_resolution/proxy_config_service.cc
+index e32f7dd..00db980 100644
+--- a/net/proxy_resolution/proxy_config_service.cc
++++ b/net/proxy_resolution/proxy_config_service.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <memory>
+ 
++#include "base/win/windows_phone_8_1.h"
+ #include "base/logging.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/task/sequenced_task_runner.h"
+@@ -13,7 +14,7 @@
+ #include "build/build_config.h"
+ #include "net/proxy_resolution/proxy_config_with_annotation.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "net/proxy_resolution/win/proxy_config_service_win.h"
+ #elif BUILDFLAG(IS_IOS)
+ #include "net/proxy_resolution/proxy_config_service_ios.h"
+@@ -25,14 +26,16 @@
+ #include "net/proxy_resolution/proxy_config_service_android.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
++#if (BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1) || \
++    BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
+ #include "net/traffic_annotation/network_traffic_annotation.h"
+ #endif
+ 
+ namespace net {
+ 
+ namespace {
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
++#if (BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1) || \
++    BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
+ constexpr net::NetworkTrafficAnnotationTag kSystemProxyConfigTrafficAnnotation =
+     net::DefineNetworkTrafficAnnotation("proxy_config_system", R"(
+       semantics {
+@@ -94,7 +97,11 @@ class ProxyConfigServiceDirect : public ProxyConfigService {
+ std::unique_ptr<ProxyConfigService>
+ ProxyConfigService::CreateSystemProxyConfigService(
+     scoped_refptr<base::SequencedTaskRunner> main_task_runner) {
+-#if BUILDFLAG(IS_WIN)
++#if BASE_WIN_IS_PHONE_8_1
++  // The phone SDK lacks WinHTTP. Networks requiring a proxy need an
++  // explicit Chromium proxy configuration until WinRT discovery is wired up.
++  return std::make_unique<ProxyConfigServiceDirect>();
++#elif BUILDFLAG(IS_WIN)
+   return std::make_unique<ProxyConfigServiceWin>(
+       kSystemProxyConfigTrafficAnnotation);
+ #elif BUILDFLAG(IS_IOS)
+diff --git a/net/socket/tcp_socket_win.cc b/net/socket/tcp_socket_win.cc
+index d06a160..12c7251 100644
+--- a/net/socket/tcp_socket_win.cc
++++ b/net/socket/tcp_socket_win.cc
+@@ -5,7 +5,12 @@
+ #include "net/socket/tcp_socket.h"
+ 
+ #include <errno.h>
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#define NET_TCP_WINDOWS_PHONE_81 1
++#else
++#define NET_TCP_WINDOWS_PHONE_81 0
+ #include <mstcpip.h>
++#endif
+ 
+ #include <memory>
+ #include <optional>
+@@ -24,7 +29,9 @@
+ #include "base/notimplemented.h"
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_util.h"
++#if !NET_TCP_WINDOWS_PHONE_81
+ #include "base/win/access_token.h"
++#endif
+ #include "base/win/windows_version.h"
+ #include "net/base/address_list.h"
+ #include "net/base/features.h"
+@@ -46,7 +53,9 @@
+ #include "net/socket/socket_net_log_params.h"
+ #include "net/socket/socket_options.h"
+ #include "net/socket/socket_tag.h"
++#if !NET_TCP_WINDOWS_PHONE_81
+ #include "net/socket/tcp_socket_io_completion_port_win.h"
++#endif
+ #include "net/socket/tcp_socket_win.h"
+ 
+ namespace net {
+@@ -58,12 +67,18 @@ const int kTCPKeepAliveSeconds = 45;
+ // Returns whether the current process is running in an AppContainer, or
+ // nullopt if its access token cannot be opened.
+ std::optional<bool> IsCurrentProcessAppContainer() {
++#if NET_TCP_WINDOWS_PHONE_81
++  // The Phone app partition does not provide the desktop token query used by
++  // this optional histogram dimension.
++  return std::nullopt;
++#else
+   std::optional<base::win::AccessToken> token =
+       base::win::AccessToken::FromCurrentProcess();
+   if (!token) {
+     return std::nullopt;
+   }
+   return token->IsAppContainer();
++#endif
+ }
+ 
+ void RecordNonPubliclyRoutableConnectResult(const IPEndPoint& peer_address,
+@@ -84,18 +99,33 @@ void RecordNonPubliclyRoutableConnectResult(const IPEndPoint& peer_address,
+ // connections. See http://crbug.com/27400 for details.
+ bool SetTCPKeepAlive(SOCKET socket, BOOL enable, int delay_secs) {
+   unsigned delay = delay_secs * 1000;
+-  struct tcp_keepalive keepalive_vals = {
++#if NET_TCP_WINDOWS_PHONE_81
++  // The Phone mstcpip.h references an absent nldef.h. Use the documented
++  // SIO_KEEPALIVE_VALS input layout and control code from that SDK.
++  struct KeepaliveValues {
++    ULONG onoff;
++    ULONG keepalivetime;
++    ULONG keepaliveinterval;
++  };
++  constexpr DWORD kKeepaliveControl = _WSAIOW(IOC_VENDOR, 4);
++#else
++  using KeepaliveValues = tcp_keepalive;
++  constexpr DWORD kKeepaliveControl = SIO_KEEPALIVE_VALS;
++#endif
++  KeepaliveValues keepalive_vals = {
+       enable ? 1u : 0u,  // TCP keep-alive on.
+       delay,  // Delay seconds before sending first TCP keep-alive packet.
+       delay,  // Delay seconds between sending TCP keep-alive packets.
+   };
+   DWORD bytes_returned = 0xABAB;
+-  int rv = WSAIoctl(socket, SIO_KEEPALIVE_VALS, &keepalive_vals,
++  int rv = WSAIoctl(socket, kKeepaliveControl, &keepalive_vals,
+                     sizeof(keepalive_vals), nullptr, 0, &bytes_returned,
+                     nullptr, nullptr);
++#if !NET_TCP_WINDOWS_PHONE_81
+   int os_error = WSAGetLastError();
+   DCHECK(!rv) << "Could not enable TCP Keep-Alive for socket: " << socket
+               << " [error: " << os_error << "].";
++#endif
+ 
+   // Disregard any failure in disabling nagle or enabling TCP Keep-Alive.
+   return rv == 0;
+@@ -462,10 +492,12 @@ std::unique_ptr<TCPSocketWin> TCPSocketWin::Create(
+     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+     NetLog* net_log,
+     const NetLogSource& source) {
++#if !NET_TCP_WINDOWS_PHONE_81
+   if (base::FeatureList::IsEnabled(features::kTcpSocketIoCompletionPortWin)) {
+     return std::make_unique<TcpSocketIoCompletionPortWin>(
+         std::move(socket_performance_watcher), net_log, source);
+   }
++#endif
+   return std::make_unique<TCPSocketDefaultWin>(
+       std::move(socket_performance_watcher), net_log, source);
+ }
+@@ -474,10 +506,12 @@ std::unique_ptr<TCPSocketWin> TCPSocketWin::Create(
+ std::unique_ptr<TCPSocketWin> TCPSocketWin::Create(
+     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+     NetLogWithSource net_log_source) {
++#if !NET_TCP_WINDOWS_PHONE_81
+   if (base::FeatureList::IsEnabled(features::kTcpSocketIoCompletionPortWin)) {
+     return std::make_unique<TcpSocketIoCompletionPortWin>(
+         std::move(socket_performance_watcher), net_log_source);
+   }
++#endif
+   return std::make_unique<TCPSocketDefaultWin>(
+       std::move(socket_performance_watcher), std::move(net_log_source));
+ }
+@@ -632,8 +666,20 @@ int TCPSocketWin::Accept(std::unique_ptr<TCPSocketWin>* socket,
+ 
+   if (result == ERR_IO_PENDING) {
+     // Start watching.
++#if NET_TCP_WINDOWS_PHONE_81
++    if (WSAEventSelect(socket_, accept_event_, FD_ACCEPT) == SOCKET_ERROR) {
++      result = MapSystemError(WSAGetLastError());
++      net_log_.EndEventWithNetErrorCode(NetLogEventType::TCP_ACCEPT, result);
++      return result;
++    }
++    if (!accept_watcher_.StartWatchingOnce(accept_event_, this)) {
++      net_log_.EndEventWithNetErrorCode(NetLogEventType::TCP_ACCEPT, ERR_FAILED);
++      return ERR_FAILED;
++    }
++#else
+     WSAEventSelect(socket_, accept_event_, FD_ACCEPT);
+     accept_watcher_.StartWatchingOnce(accept_event_, this);
++#endif
+ 
+     accept_socket_ = socket;
+     accept_address_ = address;
+@@ -761,7 +807,14 @@ int TCPSocketDefaultWin::ReadIfReady(IOBuffer* buf,
+ 
+   CoreImpl& core = GetCoreImpl();
+   if (!core.non_blocking_reads_initialized_) {
++#if NET_TCP_WINDOWS_PHONE_81
++    if (WSAEventSelect(socket_, core.read_event_, FD_READ | FD_CLOSE) ==
++        SOCKET_ERROR) {
++      return MapSystemError(WSAGetLastError());
++    }
++#else
+     WSAEventSelect(socket_, core.read_event_, FD_READ | FD_CLOSE);
++#endif
+     core.non_blocking_reads_initialized_ = true;
+   }
+   int rv = recv(socket_, buf->data(), buf_len, 0);
+@@ -1096,7 +1149,15 @@ int TCPSocketWin::DoConnect() {
+ 
+   // WSAEventSelect sets the socket to non-blocking mode as a side effect.
+   // Our connect() and recv() calls require that the socket be non-blocking.
++#if NET_TCP_WINDOWS_PHONE_81
++  if (WSAEventSelect(socket_, core_->GetConnectEvent(), FD_CONNECT) ==
++      SOCKET_ERROR) {
++    connect_os_error_ = WSAGetLastError();
++    return MapConnectError(connect_os_error_);
++  }
++#else
+   WSAEventSelect(socket_, core_->GetConnectEvent(), FD_CONNECT);
++#endif
+ 
+   SockaddrStorage storage;
+   if (!peer_address_->ToSockAddr(storage.addr(), &storage.addr_len)) {
+@@ -1112,6 +1173,7 @@ int TCPSocketWin::DoConnect() {
+                sizeof(randomize_port));
+   }
+ 
++#if !NET_TCP_WINDOWS_PHONE_81
+   // Disable SYN retransmissions for loopback connections.
+   // Windows retransmits the SYN packet multiple times before reporting
+   // an ECONNREFUSED for a closed port, resulting in a ~2s delay.
+@@ -1131,7 +1193,12 @@ int TCPSocketWin::DoConnect() {
+              nullptr);
+   }
+ 
++#endif
++
+   if (!connect(socket_, storage.addr(), storage.addr_len)) {
++#if NET_TCP_WINDOWS_PHONE_81
++    return OK;
++#else
+     // Connected without waiting!
+     //
+     // The MSDN page for connect says:
+@@ -1142,6 +1209,7 @@ int TCPSocketWin::DoConnect() {
+     // It's not documented whether the event object will be signaled or not
+     // if connect does return 0.
+     NOTREACHED();
++#endif
+   } else {
+     int os_error = WSAGetLastError();
+     if (os_error != WSAEWOULDBLOCK) {
+diff --git a/net/socket/udp_socket_win.cc b/net/socket/udp_socket_win.cc
+index 4e4d7d4..09bbdae 100644
+--- a/net/socket/udp_socket_win.cc
++++ b/net/socket/udp_socket_win.cc
+@@ -6,7 +6,9 @@
+ 
+ #include <winsock2.h>
+ 
++#if !defined(WINUWP_8_1)
+ #include <mstcpip.h>
++#endif
+ 
+ #include <memory>
+ #include <type_traits>
+@@ -122,10 +124,12 @@ class UDPSocketWin::Core : public base::RefCounted<Core> {
+   // The buffers used in Read() and Write().
+   scoped_refptr<IOBuffer> read_iobuffer_;
+   scoped_refptr<IOBuffer> write_iobuffer_;
++#if !defined(WINUWP_8_1)
+   // The struct for packet metadata passed to WSARecvMsg().
+   std::unique_ptr<WSAMSG> read_message_ = nullptr;
+   // Big enough for IP_ECN or IPV6_ECN, nothing more.
+   char read_control_buffer_[WSA_CMSG_SPACE(sizeof(int))];
++#endif
+ 
+   // The address storage passed to WSARecvFrom().
+   SockaddrStorage recv_addr_storage_;
+@@ -226,6 +230,7 @@ void UDPSocketWin::Core::WriteDelegate::OnObjectSignaled(HANDLE object) {
+ }
+ //-----------------------------------------------------------------------------
+ 
++#if !defined(WINUWP_8_1)
+ QwaveApi::QwaveApi() {
+   HMODULE qwave = LoadLibrary(L"qwave.dll");
+   if (!qwave)
+@@ -296,6 +301,7 @@ BOOL QwaveApi::SetFlow(HANDLE handle,
+                        LPOVERLAPPED overlapped) {
+   return set_flow_func_(handle, flow_id, op, size, data, reserved, overlapped);
+ }
++#endif
+ 
+ //-----------------------------------------------------------------------------
+ 
+@@ -377,8 +383,10 @@ void UDPSocketWin::Close() {
+   if (socket_ == INVALID_SOCKET)
+     return;
+ 
++#if !defined(WINUWP_8_1)
+   // Remove socket_ from the QoS subsystem before we invalidate it.
+   dscp_manager_ = nullptr;
++#endif
+ 
+   // Zero out any pending read/write callback state.
+   read_callback_.Reset();
+@@ -506,6 +514,7 @@ int UDPSocketWin::SendTo(IOBuffer* buf,
+                          int buf_len,
+                          const IPEndPoint& address,
+                          CompletionOnceCallback callback) {
++#if !defined(WINUWP_8_1)
+   if (dscp_manager_) {
+     // Alert DscpManager in case this is a new remote address.  Failure to
+     // apply Dscp code is never fatal.
+@@ -513,6 +522,7 @@ int UDPSocketWin::SendTo(IOBuffer* buf,
+     if (rv != OK)
+       net_log_.AddEventWithNetErrorCode(NetLogEventType::UDP_SEND_ERROR, rv);
+   }
++#endif
+   return SendToOrWrite(buf, buf_len, &address, std::move(callback));
+ }
+ 
+@@ -575,8 +585,10 @@ int UDPSocketWin::InternalConnect(const IPEndPoint& address) {
+ 
+   remote_address_ = std::make_unique<IPEndPoint>(address);
+ 
++#if !defined(WINUWP_8_1)
+   if (dscp_manager_)
+     dscp_manager_->PrepareForSend(*remote_address_.get());
++#endif
+ 
+   return rv;
+ }
+@@ -660,6 +672,7 @@ int UDPSocketWin::SetDoNotFragment() {
+   return rv == 0 ? OK : MapSystemError(WSAGetLastError());
+ }
+ 
++#if !defined(WINUWP_8_1)
+ LPFN_WSARECVMSG UDPSocketWin::GetRecvMsgPointer() {
+   LPFN_WSARECVMSG rv;
+   GUID message_code = WSAID_WSARECVMSG;
+@@ -683,6 +696,7 @@ LPFN_WSASENDMSG UDPSocketWin::GetSendMsgPointer() {
+   }
+   return rv;
+ }
++#endif
+ 
+ int UDPSocketWin::LogAndReturnError() const {
+   int result = MapSystemError(WSAGetLastError());
+@@ -694,6 +708,9 @@ int UDPSocketWin::LogAndReturnError() const {
+ // this does not set the option for IPv4 packets on a dual-stack socket.
+ // It also returns an error when bound to an IPv4-mapped IPv6 address.
+ int UDPSocketWin::SetRecvTos() {
++#if defined(WINUWP_8_1)
++  return ERR_NOT_IMPLEMENTED;
++#else
+   DCHECK_NE(socket_, INVALID_SOCKET);
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   IPEndPoint address;
+@@ -735,6 +752,7 @@ int UDPSocketWin::SetRecvTos() {
+   }
+   report_ecn_ = true;
+   return 0;
++#endif
+ }
+ 
+ void UDPSocketWin::SetMsgConfirm(bool confirm) {}
+@@ -804,13 +822,17 @@ void UDPSocketWin::DidCompleteRead() {
+     } else {
+       result = ERR_ADDRESS_INVALID;
+     }
++#if !defined(WINUWP_8_1)
+     if (core_->read_message_ != nullptr) {
+       SetLastTosFromWSAMSG(*core_->read_message_);
+     }
++#endif
+   }
+   LogRead(result, core_->read_iobuffer_->data(), address_to_log);
+   core_->read_iobuffer_ = nullptr;
++#if !defined(WINUWP_8_1)
+   core_->read_message_ = nullptr;
++#endif
+   recv_from_address_ = nullptr;
+   DoReadCallback(result);
+ }
+@@ -942,6 +964,7 @@ void UDPSocketWin::LogWrite(int result,
+   }
+ }
+ 
++#if !defined(WINUWP_8_1)
+ void UDPSocketWin::PopulateWSAMSG(WSAMSG& message,
+                                   SockaddrStorage& storage,
+                                   WSABUF* data_buffer,
+@@ -1006,12 +1029,15 @@ void UDPSocketWin::SetLastTosFromWSAMSG(WSAMSG& message) {
+   }
+   last_tos_.ecn = static_cast<EcnCodePoint>(ecn);
+ }
++#endif
+ 
+ int UDPSocketWin::InternalRecvFromOverlapped(IOBuffer* buf,
+                                              int buf_len,
+                                              IPEndPoint* address) {
+   DCHECK(!core_->read_iobuffer_.get());
++#if !defined(WINUWP_8_1)
+   DCHECK(!core_->read_message_.get());
++#endif
+   SockaddrStorage& storage = core_->recv_addr_storage_;
+   storage.addr_len = sizeof(storage.addr_storage);
+ 
+@@ -1023,6 +1049,7 @@ int UDPSocketWin::InternalRecvFromOverlapped(IOBuffer* buf,
+   DWORD num;
+   CHECK_NE(INVALID_SOCKET, socket_);
+   int rv;
++#if !defined(WINUWP_8_1)
+   std::unique_ptr<WSAMSG> message;
+   if (report_ecn_) {
+     WSABUF control_buffer;
+@@ -1035,7 +1062,9 @@ int UDPSocketWin::InternalRecvFromOverlapped(IOBuffer* buf,
+     if (rv == 0) {
+       SetLastTosFromWSAMSG(*message);
+     }
+-  } else {
++  } else
++#endif
++  {
+     rv = WSARecvFrom(socket_, &read_buffer, 1, &num, &flags, storage.addr(),
+                      &storage.addr_len, &core_->read_overlapped_, nullptr);
+   }
+@@ -1069,7 +1098,9 @@ int UDPSocketWin::InternalRecvFromOverlapped(IOBuffer* buf,
+   }
+   core_->WatchForRead();
+   core_->read_iobuffer_ = buf;
++#if !defined(WINUWP_8_1)
+   core_->read_message_ = std::move(message);
++#endif
+   return ERR_IO_PENDING;
+ }
+ 
+@@ -1098,6 +1129,7 @@ int UDPSocketWin::InternalSendToOverlapped(IOBuffer* buf,
+   DWORD flags = 0;
+   DWORD num;
+   int rv;
++#if !defined(WINUWP_8_1)
+   if (send_ecn_ != ECN_NOT_ECT) {
+     WSABUF control_buffer;
+     char raw_control_buffer[WSA_CMSG_SPACE(sizeof(int))];
+@@ -1114,7 +1146,9 @@ int UDPSocketWin::InternalSendToOverlapped(IOBuffer* buf,
+     }
+     rv = wsa_send_msg_(socket_, &message, flags, &num,
+                        &core_->write_overlapped_, nullptr);
+-  } else {
++  } else
++#endif
++  {
+     rv = WSASendTo(socket_, &write_buffer, 1, &num, flags, addr,
+                    storage.addr_len, &core_->write_overlapped_, nullptr);
+   }
+@@ -1148,6 +1182,7 @@ int UDPSocketWin::InternalRecvFromNonBlocking(IOBuffer* buf,
+   CHECK_NE(INVALID_SOCKET, socket_);
+ 
+   int rv;
++#if !defined(WINUWP_8_1)
+   if (report_ecn_) {
+     WSABUF read_buffer;
+     read_buffer.buf = buf->data();
+@@ -1165,7 +1200,9 @@ int UDPSocketWin::InternalRecvFromNonBlocking(IOBuffer* buf,
+       rv = bytes_read;  // WSARecvMsg() returns zero on delivery, but recvfrom
+                         // returns the number of bytes received.
+     }
+-  } else {
++  } else
++#endif
++  {
+     rv = recvfrom(socket_, buf->data(), buf_len, 0, storage.addr(),
+                   &storage.addr_len);
+   }
+@@ -1216,6 +1253,7 @@ int UDPSocketWin::InternalSendToNonBlocking(IOBuffer* buf,
+   }
+ 
+   int rv;
++#if !defined(WINUWP_8_1)
+   if (send_ecn_ != ECN_NOT_ECT) {
+     char raw_control_buffer[WSA_CMSG_SPACE(sizeof(INT))];
+     WSABUF write_buffer;
+@@ -1231,7 +1269,9 @@ int UDPSocketWin::InternalSendToNonBlocking(IOBuffer* buf,
+     if (rv == 0) {
+       rv = bytes_sent;
+     }
+-  } else {
++  } else
++#endif
++  {
+     rv = sendto(socket_, buf->data(), buf_len, 0, addr, storage.addr_len);
+   }
+   if (rv == SOCKET_ERROR) {
+@@ -1325,9 +1365,11 @@ int UDPSocketWin::DoBind(const IPEndPoint& address) {
+   return MapSystemError(last_error);
+ }
+ 
++#if !defined(WINUWP_8_1)
+ QwaveApi* UDPSocketWin::GetQwaveApi() const {
+   return QwaveApi::GetDefault();
+ }
++#endif
+ 
+ int UDPSocketWin::JoinGroup(const IPAddress& group_address) const {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+@@ -1494,6 +1536,7 @@ int UDPSocketWin::SetMulticastLoopbackMode(bool loopback) {
+   return OK;
+ }
+ 
++#if !defined(WINUWP_8_1)
+ QOS_TRAFFIC_TYPE DscpToTrafficType(DiffServCodePoint dscp) {
+   QOS_TRAFFIC_TYPE traffic_type = QOSTrafficTypeBestEffort;
+   switch (dscp) {
+@@ -1535,6 +1578,7 @@ QOS_TRAFFIC_TYPE DscpToTrafficType(DiffServCodePoint dscp) {
+   }
+   return traffic_type;
+ }
++#endif
+ 
+ int UDPSocketWin::SetDiffServCodePoint(DiffServCodePoint dscp) {
+   return SetTos(dscp, ECN_NO_CHANGE);
+@@ -1544,6 +1588,10 @@ int UDPSocketWin::SetTos(DiffServCodePoint dscp, EcnCodePoint ecn) {
+   if (!is_connected()) {
+     return ERR_SOCKET_NOT_CONNECTED;
+   }
++#if defined(WINUWP_8_1)
++  return (dscp == DSCP_NO_CHANGE && (ecn == ECN_NO_CHANGE || ecn == ECN_NOT_ECT))
++             ? OK : ERR_NOT_IMPLEMENTED;
++#else
+   if (ecn != ECN_NO_CHANGE) {
+     send_ecn_ = ecn;
+   }
+@@ -1571,6 +1619,7 @@ int UDPSocketWin::SetTos(DiffServCodePoint dscp, EcnCodePoint ecn) {
+     }
+   }
+   return OK;
++#endif
+ }
+ 
+ int UDPSocketWin::SetIPv6Only(bool ipv6_only) {
+@@ -1596,6 +1645,7 @@ void UDPSocketWin::ApplySocketTag(const SocketTag& tag) {
+   CHECK(tag == SocketTag());
+ }
+ 
++#if !defined(WINUWP_8_1)
+ DscpManager::DscpManager(QwaveApi* api, SOCKET socket)
+     : api_(api), socket_(socket) {
+   RequestHandle();
+@@ -1735,5 +1785,6 @@ void DscpManager::OnHandleCreated(QwaveApi* api,
+   dscp_manager->qos_handle_ = handle;
+   dscp_manager->handle_is_initializing_ = false;
+ }
++#endif
+ 
+ }  // namespace net
+diff --git a/net/socket/udp_socket_win.h b/net/socket/udp_socket_win.h
+index 44fc63f..e14b879 100644
+--- a/net/socket/udp_socket_win.h
++++ b/net/socket/udp_socket_win.h
+@@ -7,11 +7,15 @@
+ 
+ #include <winsock2.h>
+ 
++#if !defined(WINUWP_8_1)
+ #include <qos2.h>
++#endif
+ #include <stdint.h>
+ 
++#if !defined(WINUWP_8_1)
+ // Must be after winsock2.h:
+ #include <MSWSock.h>
++#endif
+ 
+ #include <atomic>
+ #include <memory>
+@@ -44,6 +48,7 @@ class NetLog;
+ struct NetLogSource;
+ class SocketTag;
+ 
++#if !defined(WINUWP_8_1)
+ // QWAVE (Quality Windows Audio/Video Experience) is the latest windows
+ // library for setting packet priorities (and other things). Unfortunately,
+ // Microsoft has decided that setting the DSCP bits with setsockopt() no
+@@ -159,6 +164,7 @@ class NET_EXPORT DscpManager {
+   QOS_FLOWID flow_id_ = 0;
+   base::WeakPtrFactory<DscpManager> weak_ptr_factory_{this};
+ };
++#endif
+ 
+ //-----------------------------------------------------------------------------
+ 
+@@ -455,6 +461,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+ 
+   int InternalConnect(const IPEndPoint& address);
+ 
++#if !defined(WINUWP_8_1)
+   // Returns a function pointer to the platform's instantiation of WSARecvMsg()
+   // or WSASendMsg().
+   LPFN_WSARECVMSG GetRecvMsgPointer();
+@@ -475,6 +482,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+                       bool send);
+   // Sets last_tos_ to the last ECN codepoint contained in |message|.
+   void SetLastTosFromWSAMSG(WSAMSG& message);
++#endif
+ 
+   // Version for using overlapped IO.
+   int InternalRecvFromOverlapped(IOBuffer* buf,
+@@ -508,10 +516,12 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+   // Configures opened `socket_` depending on whether it uses nonblocking IO.
+   void ConfigureOpenedSocket();
+ 
++#if !defined(WINUWP_8_1)
+   // This is provided to allow QwaveApi mocking in tests. |UDPSocketWin| method
+   // implementations should call |GetQwaveApi()| instead of
+   // |QwaveApi::GetDefault()| directly.
+   virtual QwaveApi* GetQwaveApi() const;
++#endif
+ 
+   SOCKET socket_;
+   int addr_family_ = 0;
+@@ -568,8 +578,10 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+ 
+   NetLogWithSource net_log_;
+ 
++#if !defined(WINUWP_8_1)
+   // Maintains remote addresses for QWAVE qos management.
+   std::unique_ptr<DscpManager> dscp_manager_;
++#endif
+ 
+   // Manages decrementing the global open UDP socket counter when this
+   // UDPSocket is destroyed.
+@@ -577,6 +589,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+ 
+   DscpAndEcn last_tos_ = {DSCP_DEFAULT, ECN_DEFAULT};
+ 
++#if !defined(WINUWP_8_1)
+   // If true, the socket has been configured to report ECN on incoming
+   // datagrams.
+   bool report_ecn_ = false;
+@@ -588,6 +601,7 @@ class NET_EXPORT UDPSocketWin : public base::win::ObjectWatcher::Delegate {
+ 
+   // The ECN codepoint to send on outgoing packets.
+   EcnCodePoint send_ecn_ = ECN_NOT_ECT;
++#endif
+ 
+   THREAD_CHECKER(thread_checker_);
+ 
+diff --git a/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc b/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc
+index 342597b..f0b2da5 100644
+--- a/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc
++++ b/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc
+@@ -8,6 +8,7 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <string>
++#include <string_view>
+ 
+ #include "absl/strings/str_cat.h"
+ #include "quiche/common/platform/api/quiche_bug_tracker.h"
+@@ -16,6 +17,45 @@
+ 
+ namespace quiche {
+ 
++#if defined(WINUWP_8_1)
++namespace {
++
++// The Phone SDK exposes numeric getaddrinfo/getnameinfo. These APIs require
++// Winsock initialization even for conversions with DNS disabled.
++class NumericWinsock {
++ public:
++  NumericWinsock() {
++    WSADATA data;
++    ready_ = WSAStartup(MAKEWORD(2, 2), &data) == 0;
++  }
++  ~NumericWinsock() {
++    if (ready_) WSACleanup();
++  }
++  bool ready() const { return ready_; }
++ private:
++  bool ready_;
++};
++
++// getaddrinfo also accepts historical IPv4 forms such as "127.1" and octal
++// octets. Require four decimal octets for parity with inet_pton.
++bool IsDottedQuad(std::string_view input) {
++  for (int i = 0; i < 4; ++i) {
++    size_t end = input.find('.');
++    auto octet = input.substr(0, end);
++    if (octet.empty() || octet.size() > 3 ||
++        (octet.size() > 1 && octet.front() == '0') ||
++        octet.find_first_not_of("0123456789") != std::string_view::npos ||
++        (octet.size() == 3 && octet > "255") ||
++        ((i == 3) != (end == std::string_view::npos))) {
++      return false;
++    }
++    if (i < 3) input.remove_prefix(end + 1);
++  }
++  return true;
++}
++}  // namespace
++#endif
++
+ QuicheIpAddress QuicheIpAddress::Loopback4() {
+   QuicheIpAddress result;
+   result.family_ = IpAddressFamily::IP_V4;
+@@ -112,11 +152,34 @@ std::string QuicheIpAddress::ToString() const {
+     return "";
+   }
+ 
++#if defined(WINUWP_8_1)
++  NumericWinsock winsock;
++  if (!winsock.ready()) return {};
++  sockaddr_in v4{};
++  sockaddr_in6 v6{};
++  const sockaddr* addr;
++  int length;
++  if (IsIPv4()) {
++    v4.sin_family = AF_INET;
++    v4.sin_addr = address_.v4;
++    addr = reinterpret_cast<const sockaddr*>(&v4);
++    length = sizeof(v4);
++  } else {
++    v6.sin6_family = AF_INET6;
++    v6.sin6_addr = address_.v6;
++    addr = reinterpret_cast<const sockaddr*>(&v6);
++    length = sizeof(v6);
++  }
++  char buffer[64];
++  if (getnameinfo(addr, length, buffer, sizeof(buffer), nullptr, 0,
++                  NI_NUMERICHOST) != 0) return {};
++#else
+   char buffer[INET6_ADDRSTRLEN] = {0};
+   const char* result =
+       inet_ntop(AddressFamilyToInt(), address_.bytes, buffer, sizeof(buffer));
+   QUICHE_BUG_IF(quiche_bug_10126_4, result == nullptr)
+       << "Failed to convert an IP address to string";
++#endif
+   return buffer;
+ }
+ 
+@@ -167,6 +230,32 @@ bool QuicheIpAddress::FromPackedString(const char* data, size_t length) {
+ }
+ 
+ bool QuicheIpAddress::FromString(std::string str) {
++#if defined(WINUWP_8_1)
++  if (str.empty() || str.find_first_not_of("0123456789abcdefABCDEF:.") !=
++                         std::string::npos) return false;
++  const auto colon = str.rfind(':');
++  const bool ipv6 = colon != std::string::npos;
++  if ((!ipv6 || str.find('.') != std::string::npos) &&
++      !IsDottedQuad(std::string_view(str).substr(ipv6 ? colon + 1 : 0))) {
++    return false;
++  }
++  NumericWinsock winsock;
++  if (!winsock.ready()) return false;
++  addrinfo hints{};
++  hints.ai_family = ipv6 ? AF_INET6 : AF_INET;
++  hints.ai_flags = AI_NUMERICHOST;
++  addrinfo* result = nullptr;
++  if (getaddrinfo(str.c_str(), nullptr, &hints, &result) != 0) return false;
++  if (ipv6) {
++    *this = QuicheIpAddress(
++        reinterpret_cast<const sockaddr_in6*>(result->ai_addr)->sin6_addr);
++  } else {
++    *this = QuicheIpAddress(
++        reinterpret_cast<const sockaddr_in*>(result->ai_addr)->sin_addr);
++  }
++  freeaddrinfo(result);
++  return true;
++#else
+   for (IpAddressFamily family :
+        {IpAddressFamily::IP_V6, IpAddressFamily::IP_V4}) {
+     int result =
+@@ -177,6 +266,7 @@ bool QuicheIpAddress::FromString(std::string str) {
+     }
+   }
+   return false;
++#endif
+ }
+ 
+ bool QuicheIpAddress::IsIPv4() const {
+diff --git a/services/network/url_request_context_builder_mojo.cc b/services/network/url_request_context_builder_mojo.cc
+index a8e8fbb..81dd3ef 100644
+--- a/services/network/url_request_context_builder_mojo.cc
++++ b/services/network/url_request_context_builder_mojo.cc
+@@ -4,15 +4,17 @@
+ 
+ #include "services/network/url_request_context_builder_mojo.h"
+ 
++#include "base/win/windows_phone_8_1.h"
+ #include "base/check.h"
+ #include "build/build_config.h"
+ #include "net/proxy_resolution/configured_proxy_resolution_service.h"
++#include "net/proxy_resolution/dhcp_pac_file_fetcher.h"
+ #include "net/proxy_resolution/pac_file_fetcher_impl.h"
+ #include "net/proxy_resolution/proxy_config_service.h"
+ #include "services/network/network_context.h"
+ #include "services/network/proxy_service_mojo.h"
+ #include "services/network/public/cpp/features.h"
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "net/proxy_resolution/win/dhcp_pac_file_fetcher_win.h"
+ #include "net/proxy_resolution/win/windows_system_proxy_resolution_service.h"
+ #include "services/network/windows_system_proxy_resolver_mojo.h"
+@@ -58,7 +60,7 @@ void URLRequestContextBuilderMojo::SetDhcpWpadUrlClient(
+ std::unique_ptr<net::DhcpPacFileFetcher>
+ URLRequestContextBuilderMojo::CreateDhcpPacFileFetcher(
+     net::URLRequestContext* context) {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   return std::make_unique<net::DhcpPacFileFetcherWin>(context);
+ #elif BUILDFLAG(IS_CHROMEOS)
+   return std::make_unique<DhcpPacFileFetcherMojo>(
+@@ -75,7 +77,9 @@ URLRequestContextBuilderMojo::CreateSystemProxyResolutionService(
+   if (!mojo_system_proxy_resolver_) {
+     return nullptr;
+   }
+-#if BUILDFLAG(IS_WIN)
++#if BASE_WIN_IS_PHONE_8_1
++  return nullptr;
++#elif BUILDFLAG(IS_WIN)
+   return net::WindowsSystemProxyResolutionService::Create(
+       std::make_unique<WindowsSystemProxyResolverMojo>(
+           std::move(mojo_system_proxy_resolver_)),
+diff --git a/services/tracing/BUILD.gn b/services/tracing/BUILD.gn
+index 8b7763d..ebad230 100644
+--- a/services/tracing/BUILD.gn
++++ b/services/tracing/BUILD.gn
+@@ -8,6 +8,7 @@
+ 
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ 
+ if (is_android) {
+   import("//build/config/android/rules.gni")
+@@ -41,7 +42,7 @@ if (use_blink) {
+       "//third_party/perfetto/protos/perfetto/config:lite",
+     ]
+ 
+-    if (is_win) {
++    if (is_win && !phone81_port) {
+       deps = [ "//components/tracing:tracing_etw" ]
+     }
+   }
+diff --git a/services/tracing/public/cpp/BUILD.gn b/services/tracing/public/cpp/BUILD.gn
+index c93103f..e9e872f 100644
+--- a/services/tracing/public/cpp/BUILD.gn
++++ b/services/tracing/public/cpp/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/config/cast.gni")
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//build_overrides/build.gni")
+ 
+ source_set("traced_process") {
+@@ -119,7 +120,7 @@ target("component", "cpp") {
+       "//third_party/snappy",
+     ]
+ 
+-    if (is_win) {
++    if (is_win && !phone81_port) {
+       deps += [ "//components/tracing:tracing_etw" ]
+     }
+ 
+diff --git a/services/tracing/public/cpp/perfetto/perfetto_config.cc b/services/tracing/public/cpp/perfetto/perfetto_config.cc
+index 0c59649..2c05e99 100644
+--- a/services/tracing/public/cpp/perfetto/perfetto_config.cc
++++ b/services/tracing/public/cpp/perfetto/perfetto_config.cc
+@@ -17,6 +17,7 @@
+ #include "base/trace_event/trace_config.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/tracing/trace_time.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "build/build_config.h"
+ #include "build/chromecast_buildflags.h"
+ #include "components/tracing/common/tracing_switches.h"
+@@ -25,7 +26,7 @@
+ #include "third_party/perfetto/protos/perfetto/config/chrome/histogram_samples.gen.h"
+ #include "third_party/perfetto/protos/perfetto/config/track_event/track_event_config.gen.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "components/tracing/common/etw_stack_sampling_win.h"
+ #endif
+ 
+@@ -246,7 +247,7 @@ void AdaptDataSourceConfig(
+     config->set_track_event_config_raw(track_event_config.SerializeAsString());
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   if (config->name() == "org.chromium.etw_system") {
+     AddEtwStackSamplingDebugIds(config);
+   }
+diff --git a/services/tracing/public/cpp/trace_startup.cc b/services/tracing/public/cpp/trace_startup.cc
+index 81c71cf..053b099 100644
+--- a/services/tracing/public/cpp/trace_startup.cc
++++ b/services/tracing/public/cpp/trace_startup.cc
+@@ -16,6 +16,7 @@
+ #include "base/task/thread_pool/thread_pool_instance.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/trace_event/trace_session_observer.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "build/build_config.h"
+ #include "components/tracing/common/tracing_switches.h"
+ #include "services/tracing/public/cpp/perfetto/perfetto_config.h"
+@@ -26,7 +27,7 @@
+ #include "services/tracing/public/cpp/tracing_features.h"
+ #include "third_party/perfetto/include/perfetto/tracing/track.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "components/tracing/common/etw_export_win.h"
+ #endif
+ 
+@@ -126,9 +127,9 @@ void InitTracing(
+   StartupTrackEventConfigObserver::GetInstance();
+   base::trace_event::TraceSessionObserverList::Initialize();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   tracing::EnableETWExport();
+-#endif  // BUILDFLAG(IS_WIN)
++#endif
+ 
+   auto& startup_config = TraceStartupConfig::GetInstance();
+ 
 diff --git a/skia/BUILD.gn b/skia/BUILD.gn
 index 773cc9c..15c9e49 100644
 --- a/skia/BUILD.gn
@@ -9352,6 +12392,26 @@ index 3dae9a5..9b2a41e 100644
      options_.enable_codegen_trace = kEnableCodegenTrace;
    }
  }
+diff --git a/third_party/simdutf/simdutf.cpp b/third_party/simdutf/simdutf.cpp
+index ebada9a..1bcd0b4 100644
+--- a/third_party/simdutf/simdutf.cpp
++++ b/third_party/simdutf/simdutf.cpp
+@@ -18416,6 +18416,7 @@ available_implementation_list::detect_best_supported() const noexcept {
+ 
+ const implementation *
+ detect_best_supported_implementation_on_first_use::set_best() const noexcept {
++#if !defined(WINUWP_8_1)
+   SIMDUTF_PUSH_DISABLE_WARNINGS
+   SIMDUTF_DISABLE_DEPRECATED_WARNING // Disable CRT_SECURE warning on MSVC:
+                                      // manually verified this is safe
+@@ -18432,6 +18433,7 @@ detect_best_supported_implementation_on_first_use::set_best() const noexcept {
+       return get_active_implementation() = get_unsupported_singleton();
+     }
+   }
++#endif
+   return get_active_implementation() =
+              get_available_implementations().detect_best_supported();
+ }
 diff --git a/third_party/skia/src/core/SkSemaphore.cpp b/third_party/skia/src/core/SkSemaphore.cpp
 index 3592477..f84d60c 100644
 --- a/third_party/skia/src/core/SkSemaphore.cpp
@@ -9496,6 +12556,628 @@ index e5ab5c2..269f74f 100644
          if (self.fHandle != 0 && self.fHandle != (HANDLE)~0) {
              dataPtr = &data;
          }
+diff --git a/third_party/sqlite/BUILD.gn b/third_party/sqlite/BUILD.gn
+index eedf79f..136350e 100644
+--- a/third_party/sqlite/BUILD.gn
++++ b/third_party/sqlite/BUILD.gn
+@@ -260,6 +260,9 @@ component("chromium_sqlite3") {
+   }
+ 
+   deps = [ "//third_party/icu" ]
++  if (current_os == "winuwp") {
++    deps += [ ":phone81_paths" ]
++  }
+ }
+ 
+ # Similar to component("chromium_sqlite") above, but uses the developer tools
+@@ -339,6 +342,15 @@ source_set("dev_sqlite3") {
+   }
+ 
+   deps = [ "//third_party/icu" ]
++  if (current_os == "winuwp") {
++    deps += [ ":phone81_paths" ]
++  }
++}
++
++if (current_os == "winuwp") {
++  source_set("phone81_paths") {
++    sources = [ "phone81_paths.cc" ]
++  }
+ }
+ 
+ config("sqlite_export") {
+diff --git a/third_party/sqlite/phone81_paths.cc b/third_party/sqlite/phone81_paths.cc
+new file mode 100644
+index 0000000..799be4f
+--- /dev/null
++++ b/third_party/sqlite/phone81_paths.cc
+@@ -0,0 +1,118 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <windows.h>
++
++#if defined(WINUWP_8_1) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#include <roapi.h>
++#include <windows.storage.h>
++#include <wrl/client.h>
++#include <wrl/wrappers/corewrappers.h>
++
++#include <algorithm>
++#include <string>
++
++namespace {
++using namespace ABI::Windows::Storage;
++using Microsoft::WRL::ComPtr;
++using Microsoft::WRL::Wrappers::HString;
++using Microsoft::WRL::Wrappers::HStringReference;
++
++HRESULT AppFolder(bool temporary, std::wstring& path) {
++  ComPtr<IApplicationDataStatics> factory;
++  HRESULT hr = RoGetActivationFactory(
++      HStringReference(RuntimeClass_Windows_Storage_ApplicationData).Get(),
++      IID_PPV_ARGS(&factory));
++  ComPtr<IApplicationData> data;
++  if (SUCCEEDED(hr)) hr = factory->get_Current(&data);
++  ComPtr<IStorageFolder> folder;
++  if (SUCCEEDED(hr)) {
++    hr = temporary ? data->get_TemporaryFolder(&folder)
++                   : data->get_LocalFolder(&folder);
++  }
++  ComPtr<IStorageItem> item;
++  if (SUCCEEDED(hr)) hr = folder.As(&item);
++  HString value;
++  if (SUCCEEDED(hr)) hr = item->get_Path(value.GetAddressOf());
++  if (SUCCEEDED(hr)) {
++    UINT32 length;
++    const wchar_t* raw = WindowsGetStringRawBuffer(value.Get(), &length);
++    if (!length) return E_FAIL;
++    path.assign(raw, length);
++  }
++  return hr;
++}
++
++bool GetFolder(bool temporary, std::wstring& path) {
++  HRESULT init = RoInitialize(RO_INIT_MULTITHREADED);
++  HRESULT hr = init;
++  if (SUCCEEDED(init) || init == RPC_E_CHANGED_MODE) hr = AppFolder(temporary, path);
++  if (SUCCEEDED(init)) RoUninitialize();
++  if (FAILED(hr)) SetLastError(HRESULT_FACILITY(hr) == FACILITY_WIN32
++                                   ? HRESULT_CODE(hr) : ERROR_PATH_NOT_FOUND);
++  return SUCCEEDED(hr);
++}
++
++DWORD CopyPath(const std::wstring& path, DWORD capacity, LPWSTR output) {
++  if (path.size() >= MAXDWORD) {
++    SetLastError(ERROR_FILENAME_EXCED_RANGE);
++    return 0;
++  }
++  DWORD length = static_cast<DWORD>(path.size());
++  if (length >= capacity || !output) return length + 1;
++  std::copy_n(path.c_str(), length + 1, output);
++  return length;
++}
++}  // namespace
++
++extern "C" DWORD WINAPI sqlitePhoneTempPath(DWORD capacity, LPWSTR output) {
++  std::wstring path;
++  if (!GetFolder(true, path)) return 0;
++  path.push_back(L'\\');
++  if (path.size() >= capacity) {
++    SetLastError(ERROR_INSUFFICIENT_BUFFER);
++    return 0;
++  }
++  return CopyPath(path, capacity, output);
++}
++
++extern "C" DWORD WINAPI sqlitePhoneFullPath(LPCWSTR input, DWORD capacity,
++                                           LPWSTR output, LPWSTR* file_part) {
++  std::wstring path(input);
++  std::replace(path.begin(), path.end(), L'/', L'\\');
++  if (path.empty() || path.front() == L'\\' ||
++      (path.size() > 1 && path[1] == L':' &&
++       (path.size() < 3 || path[2] != L'\\'))) {
++    SetLastError(ERROR_BAD_PATHNAME);
++    return 0;
++  }
++  if (path.size() < 2 || path[1] != L':') {
++    std::wstring local;
++    if (!GetFolder(false, local)) return 0;
++    path = local + L"\\" + path;
++  }
++  if (path.size() < 3 || path[1] != L':' || path[2] != L'\\') {
++    SetLastError(ERROR_BAD_PATHNAME);
++    return 0;
++  }
++  std::wstring normalized = path.substr(0, 3);
++  for (size_t pos = 3; pos < path.size();) {
++    size_t end = path.find(L'\\', pos);
++    std::wstring part = path.substr(pos, end - pos);
++    if (part == L"..") {
++      size_t slash = normalized.rfind(L'\\');
++      normalized.resize(std::max<size_t>(3, slash));
++    } else if (!part.empty() && part != L".") {
++      if (normalized.size() > 3) normalized.push_back(L'\\');
++      normalized += part;
++    }
++    if (end == std::wstring::npos) break;
++    pos = end + 1;
++  }
++  DWORD count = CopyPath(normalized, capacity, output);
++  if (output && count && count < capacity && file_part)
++    *file_part = output + normalized.rfind(L'\\') + 1;
++  return count;
++}
++#endif
+diff --git a/third_party/sqlite/phone81_vfs.h b/third_party/sqlite/phone81_vfs.h
+new file mode 100644
+index 0000000..f95f80c
+--- /dev/null
++++ b/third_party/sqlite/phone81_vfs.h
+@@ -0,0 +1,53 @@
++#ifndef THIRD_PARTY_SQLITE_PHONE81_VFS_H_
++#define THIRD_PARTY_SQLITE_PHONE81_VFS_H_
++
++#include <windows.h>
++
++#define SQLITE_PHONE81 1
++#define SQLITE_UWP 1
++#define SQLITE_DISABLE_INTRINSIC 1
++#define SQLITE_MEMORY_BARRIER __atomic_thread_fence(__ATOMIC_SEQ_CST)
++#undef SQLITE_MAX_MMAP_SIZE
++#define SQLITE_MAX_MMAP_SIZE 0
++
++// The desktop attribute and flag fields share a parameter. CreateFile2
++// takes them separately, including DELETE_ON_CLOSE for SQLite temp files.
++static HANDLE WINAPI phoneCreateFile(LPCWSTR path, DWORD access, DWORD share,
++    LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE tmpl) {
++  CREATEFILE2_EXTENDED_PARAMETERS params = {0};
++  params.dwSize = sizeof(params);
++  params.dwFileAttributes = flags & 0xffff;
++  params.dwFileFlags = flags & 0xfff00000;
++  params.lpSecurityAttributes = security;
++  params.hTemplateFile = tmpl;
++  return CreateFile2(path, access, share, disposition, &params);
++}
++static DWORD WINAPI phoneAttributes(LPCWSTR path) {
++  WIN32_FILE_ATTRIBUTE_DATA info;
++  return GetFileAttributesExW(path, GetFileExInfoStandard, &info)
++      ? info.dwFileAttributes : INVALID_FILE_ATTRIBUTES;
++}
++static BOOL WINAPI phoneSize(HANDLE file, PLARGE_INTEGER size) {
++  FILE_STANDARD_INFO info;
++  if (!GetFileInformationByHandleEx(file, FileStandardInfo, &info, sizeof(info)))
++    return FALSE;
++  *size = info.EndOfFile;
++  return TRUE;
++}
++static BOOL WINAPI phoneAnsi(void) { return TRUE; }
++static DWORD WINAPI phoneWait(HANDLE object, DWORD timeout) {
++  return WaitForSingleObjectEx(object, timeout, FALSE);
++}
++DWORD WINAPI sqlitePhoneFullPath(LPCWSTR, DWORD, LPWSTR, LPWSTR*);
++DWORD WINAPI sqlitePhoneTempPath(DWORD, LPWSTR);
++#define GetFullPathNameW sqlitePhoneFullPath
++#define GetTempPathW sqlitePhoneTempPath
++#define AreFileApisANSI phoneAnsi
++#define GetSystemInfo GetNativeSystemInfo
++#define CreateFileW phoneCreateFile
++#define GetFileSizeEx phoneSize
++#define GetFileAttributesW phoneAttributes
++#define WaitForSingleObject phoneWait
++#define InitializeCriticalSection(cs) InitializeCriticalSectionEx(cs, 0, 0)
++
++#endif
+diff --git a/third_party/sqlite/sqlite3_shim_fixups.h b/third_party/sqlite/sqlite3_shim_fixups.h
+index d927981..2eb81db 100644
+--- a/third_party/sqlite/sqlite3_shim_fixups.h
++++ b/third_party/sqlite/sqlite3_shim_fixups.h
+@@ -26,6 +26,13 @@
+ #endif  // !defined(sqlite3_compileoption_used)
+ #endif  // defined(SQLITE_OMIT_COMPILEOPTION_DIAGS)
+ 
++#if defined(WINUWP_8_1)
++#include <winapifamily.h>
++#if WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#include "third_party/sqlite/phone81_vfs.h"
++#endif
++#endif
++
+ // Linux-specific configuration fixups.
+ #if defined(__linux__)
+ 
+diff --git a/third_party/sqlite/src/amalgamation/sqlite3.c b/third_party/sqlite/src/amalgamation/sqlite3.c
+index e8e8b14..7429382 100644
+--- a/third_party/sqlite/src/amalgamation/sqlite3.c
++++ b/third_party/sqlite/src/amalgamation/sqlite3.c
+@@ -49247,6 +49247,14 @@ SQLITE_API int sqlite3_os_end(void){
+ */
+ /* #include "sqliteInt.h" */
+ #if SQLITE_OS_WIN               /* This file is used for Windows only */
++/* Phone 8.1 exposes file locks but no shared file mappings. Advertise
++** no xShm methods for the native VFS. The pager can still use WAL in
++** exclusive mode or with another VFS that provides shared memory. */
++#if defined(SQLITE_PHONE81) && !defined(SQLITE_OMIT_WAL)
++# define SQLITE_OMIT_WAL
++# define SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ 
+ /*
+ ** Include code that is common to all os_*.c files
+@@ -49597,7 +49605,7 @@ static struct win_syscall {
+ #define osCreateFileW ((HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD, \
+         LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE))aSyscall[2].pCurrent)
+ 
+-#if defined(SQLITE_UWP)
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "CreateFileMappingFromApp",(SYSCALL)CreateFileMappingFromApp,0 },
+ #else
+   { "CreateFileMappingFromApp",(SYSCALL)0,                       0 },
+@@ -49668,7 +49676,7 @@ static struct win_syscall {
+ #define osGetSystemTimeAsFileTime ((VOID(WINAPI*)( \
+         LPFILETIME))aSyscall[17].pCurrent)
+ 
+-#ifdef SQLITE_UWP
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "GetTempPathW",            (SYSCALL)0,                       0 },
+ #else
+   { "GetTempPathW",            (SYSCALL)GetTempPathW,            0 },
+@@ -49747,7 +49755,11 @@ static struct win_syscall {
+ #endif
+ #define osLoadLibraryW ((HMODULE(WINAPI*)(LPCWSTR))aSyscall[28].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "LocalFree",               (SYSCALL)0,                       0 },
++#else
+   { "LocalFree",               (SYSCALL)LocalFree,               0 },
++#endif
+ #define osLocalFree ((HLOCAL(WINAPI*)(HLOCAL))aSyscall[29].pCurrent)
+ 
+   { "LockFileEx",              (SYSCALL)LockFileEx,              0 },
+@@ -49922,7 +49934,11 @@ static struct win_syscall {
+ #define osCygwin_conv_path ((size_t(*)(unsigned int, \
+     const void *, void *, size_t))aSyscall[58].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "GetDriveTypeW",            (SYSCALL)0,                      0 },
++#else
+   { "GetDriveTypeW",            (SYSCALL)GetDriveTypeW,          0 },
++#endif
+ #define osGetDriveTypeW ((UINT(WINAPI*)(LPCWSTR))aSyscall[59].pCurrent)
+ 
+ }; /* End of the overrideable system calls */
+@@ -50673,6 +50689,13 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+   */
+   DWORD dwLen = 0;
+   char *zOut = 0;
++#ifdef SQLITE_PHONE81
++  WCHAR buffer[512];
++  LPWSTR zTempWide = buffer;
++  dwLen = osFormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
++                           FORMAT_MESSAGE_IGNORE_INSERTS,
++                           NULL, lastErrno, 0, buffer, 512, NULL);
++#else
+   LPWSTR zTempWide = NULL;
+   dwLen = osFormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                            FORMAT_MESSAGE_FROM_SYSTEM |
+@@ -50683,13 +50706,16 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+                            (LPWSTR) &zTempWide,
+                            0,
+                            0);
++#endif
+   if( dwLen > 0 ){
+     /* allocate a buffer and convert to UTF8 */
+     sqlite3BeginBenignMalloc();
+     zOut = winUnicodeToUtf8(zTempWide);
+     sqlite3EndBenignMalloc();
+     /* free the system buffer allocated by FormatMessage */
++#ifndef SQLITE_PHONE81
+     osLocalFree(zTempWide);
++#endif
+   }
+   if( 0 == dwLen ){
+     sqlite3_snprintf(nBuf, zBuf, "OsError 0x%lx (%lu)", lastErrno, lastErrno);
+@@ -54197,6 +54223,12 @@ static int winFullPathnameNoMutex(
+     sqlite3_free(zTemp);
+   }
+   if( zOut ){
++#ifdef SQLITE_PHONE81
++    if( sqlite3Strlen30(zOut)>=MIN(nFull, pVfs->mxPathname) ){
++      sqlite3_free(zOut);
++      return SQLITE_CANTOPEN_FULLPATH;
++    }
++#endif
+ #ifdef __CYGWIN__
+     if( memcmp(zOut, "\\\\?\\", 4) ){
+       sqlite3_snprintf(MIN(nFull, pVfs->mxPathname), zFull, "%s", zOut);
+@@ -54600,6 +54632,11 @@ SQLITE_API int sqlite3_os_end(void){
+   return SQLITE_OK;
+ }
+ 
++#ifdef SQLITE_PHONE81_RESTORE_WAL
++# undef SQLITE_OMIT_WAL
++# undef SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ #endif /* SQLITE_OS_WIN */
+ 
+ /************** End of os_win.c **********************************************/
+diff --git a/third_party/sqlite/src/amalgamation_dev/sqlite3.c b/third_party/sqlite/src/amalgamation_dev/sqlite3.c
+index 561abc9..719ba00 100644
+--- a/third_party/sqlite/src/amalgamation_dev/sqlite3.c
++++ b/third_party/sqlite/src/amalgamation_dev/sqlite3.c
+@@ -49260,6 +49260,14 @@ SQLITE_API int sqlite3_os_end(void){
+ */
+ /* #include "sqliteInt.h" */
+ #if SQLITE_OS_WIN               /* This file is used for Windows only */
++/* Phone 8.1 exposes file locks but no shared file mappings. Advertise
++** no xShm methods for the native VFS. The pager can still use WAL in
++** exclusive mode or with another VFS that provides shared memory. */
++#if defined(SQLITE_PHONE81) && !defined(SQLITE_OMIT_WAL)
++# define SQLITE_OMIT_WAL
++# define SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ 
+ /*
+ ** Include code that is common to all os_*.c files
+@@ -49610,7 +49618,7 @@ static struct win_syscall {
+ #define osCreateFileW ((HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD, \
+         LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE))aSyscall[2].pCurrent)
+ 
+-#if defined(SQLITE_UWP)
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "CreateFileMappingFromApp",(SYSCALL)CreateFileMappingFromApp,0 },
+ #else
+   { "CreateFileMappingFromApp",(SYSCALL)0,                       0 },
+@@ -49681,7 +49689,7 @@ static struct win_syscall {
+ #define osGetSystemTimeAsFileTime ((VOID(WINAPI*)( \
+         LPFILETIME))aSyscall[17].pCurrent)
+ 
+-#ifdef SQLITE_UWP
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "GetTempPathW",            (SYSCALL)0,                       0 },
+ #else
+   { "GetTempPathW",            (SYSCALL)GetTempPathW,            0 },
+@@ -49760,7 +49768,11 @@ static struct win_syscall {
+ #endif
+ #define osLoadLibraryW ((HMODULE(WINAPI*)(LPCWSTR))aSyscall[28].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "LocalFree",               (SYSCALL)0,                       0 },
++#else
+   { "LocalFree",               (SYSCALL)LocalFree,               0 },
++#endif
+ #define osLocalFree ((HLOCAL(WINAPI*)(HLOCAL))aSyscall[29].pCurrent)
+ 
+   { "LockFileEx",              (SYSCALL)LockFileEx,              0 },
+@@ -49935,7 +49947,11 @@ static struct win_syscall {
+ #define osCygwin_conv_path ((size_t(*)(unsigned int, \
+     const void *, void *, size_t))aSyscall[58].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "GetDriveTypeW",            (SYSCALL)0,                      0 },
++#else
+   { "GetDriveTypeW",            (SYSCALL)GetDriveTypeW,          0 },
++#endif
+ #define osGetDriveTypeW ((UINT(WINAPI*)(LPCWSTR))aSyscall[59].pCurrent)
+ 
+ }; /* End of the overrideable system calls */
+@@ -50686,6 +50702,13 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+   */
+   DWORD dwLen = 0;
+   char *zOut = 0;
++#ifdef SQLITE_PHONE81
++  WCHAR buffer[512];
++  LPWSTR zTempWide = buffer;
++  dwLen = osFormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
++                           FORMAT_MESSAGE_IGNORE_INSERTS,
++                           NULL, lastErrno, 0, buffer, 512, NULL);
++#else
+   LPWSTR zTempWide = NULL;
+   dwLen = osFormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                            FORMAT_MESSAGE_FROM_SYSTEM |
+@@ -50696,13 +50719,16 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+                            (LPWSTR) &zTempWide,
+                            0,
+                            0);
++#endif
+   if( dwLen > 0 ){
+     /* allocate a buffer and convert to UTF8 */
+     sqlite3BeginBenignMalloc();
+     zOut = winUnicodeToUtf8(zTempWide);
+     sqlite3EndBenignMalloc();
+     /* free the system buffer allocated by FormatMessage */
++#ifndef SQLITE_PHONE81
+     osLocalFree(zTempWide);
++#endif
+   }
+   if( 0 == dwLen ){
+     sqlite3_snprintf(nBuf, zBuf, "OsError 0x%lx (%lu)", lastErrno, lastErrno);
+@@ -54210,6 +54236,12 @@ static int winFullPathnameNoMutex(
+     sqlite3_free(zTemp);
+   }
+   if( zOut ){
++#ifdef SQLITE_PHONE81
++    if( sqlite3Strlen30(zOut)>=MIN(nFull, pVfs->mxPathname) ){
++      sqlite3_free(zOut);
++      return SQLITE_CANTOPEN_FULLPATH;
++    }
++#endif
+ #ifdef __CYGWIN__
+     if( memcmp(zOut, "\\\\?\\", 4) ){
+       sqlite3_snprintf(MIN(nFull, pVfs->mxPathname), zFull, "%s", zOut);
+@@ -54613,6 +54645,11 @@ SQLITE_API int sqlite3_os_end(void){
+   return SQLITE_OK;
+ }
+ 
++#ifdef SQLITE_PHONE81_RESTORE_WAL
++# undef SQLITE_OMIT_WAL
++# undef SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ #endif /* SQLITE_OS_WIN */
+ 
+ /************** End of os_win.c **********************************************/
+diff --git a/third_party/sqlite/src/src/os_win.c b/third_party/sqlite/src/src/os_win.c
+index 8c6b258..c5bc3d9 100644
+--- a/third_party/sqlite/src/src/os_win.c
++++ b/third_party/sqlite/src/src/os_win.c
+@@ -14,6 +14,14 @@
+ */
+ #include "sqliteInt.h"
+ #if SQLITE_OS_WIN               /* This file is used for Windows only */
++/* Phone 8.1 exposes file locks but no shared file mappings. Advertise
++** no xShm methods for the native VFS. The pager can still use WAL in
++** exclusive mode or with another VFS that provides shared memory. */
++#if defined(SQLITE_PHONE81) && !defined(SQLITE_OMIT_WAL)
++# define SQLITE_OMIT_WAL
++# define SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ 
+ /*
+ ** Include code that is common to all os_*.c files
+@@ -364,7 +372,7 @@ static struct win_syscall {
+ #define osCreateFileW ((HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD, \
+         LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE))aSyscall[2].pCurrent)
+ 
+-#if defined(SQLITE_UWP)
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "CreateFileMappingFromApp",(SYSCALL)CreateFileMappingFromApp,0 },
+ #else
+   { "CreateFileMappingFromApp",(SYSCALL)0,                       0 },
+@@ -435,7 +443,7 @@ static struct win_syscall {
+ #define osGetSystemTimeAsFileTime ((VOID(WINAPI*)( \
+         LPFILETIME))aSyscall[17].pCurrent)
+ 
+-#ifdef SQLITE_UWP
++#if defined(SQLITE_UWP) && !defined(SQLITE_PHONE81)
+   { "GetTempPathW",            (SYSCALL)0,                       0 },
+ #else
+   { "GetTempPathW",            (SYSCALL)GetTempPathW,            0 },
+@@ -514,7 +522,11 @@ static struct win_syscall {
+ #endif
+ #define osLoadLibraryW ((HMODULE(WINAPI*)(LPCWSTR))aSyscall[28].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "LocalFree",               (SYSCALL)0,                       0 },
++#else
+   { "LocalFree",               (SYSCALL)LocalFree,               0 },
++#endif
+ #define osLocalFree ((HLOCAL(WINAPI*)(HLOCAL))aSyscall[29].pCurrent)
+ 
+   { "LockFileEx",              (SYSCALL)LockFileEx,              0 },
+@@ -689,7 +701,11 @@ static struct win_syscall {
+ #define osCygwin_conv_path ((size_t(*)(unsigned int, \
+     const void *, void *, size_t))aSyscall[58].pCurrent)
+ 
++#ifdef SQLITE_PHONE81
++  { "GetDriveTypeW",            (SYSCALL)0,                      0 },
++#else
+   { "GetDriveTypeW",            (SYSCALL)GetDriveTypeW,          0 },
++#endif
+ #define osGetDriveTypeW ((UINT(WINAPI*)(LPCWSTR))aSyscall[59].pCurrent)
+ 
+ }; /* End of the overrideable system calls */
+@@ -1440,6 +1456,13 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+   */
+   DWORD dwLen = 0;
+   char *zOut = 0;
++#ifdef SQLITE_PHONE81
++  WCHAR buffer[512];
++  LPWSTR zTempWide = buffer;
++  dwLen = osFormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
++                           FORMAT_MESSAGE_IGNORE_INSERTS,
++                           NULL, lastErrno, 0, buffer, 512, NULL);
++#else
+   LPWSTR zTempWide = NULL;
+   dwLen = osFormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
+                            FORMAT_MESSAGE_FROM_SYSTEM |
+@@ -1450,13 +1473,16 @@ static int winGetLastErrorMsg(DWORD lastErrno, int nBuf, char *zBuf){
+                            (LPWSTR) &zTempWide,
+                            0,
+                            0);
++#endif
+   if( dwLen > 0 ){
+     /* allocate a buffer and convert to UTF8 */
+     sqlite3BeginBenignMalloc();
+     zOut = winUnicodeToUtf8(zTempWide);
+     sqlite3EndBenignMalloc();
+     /* free the system buffer allocated by FormatMessage */
++#ifndef SQLITE_PHONE81
+     osLocalFree(zTempWide);
++#endif
+   }
+   if( 0 == dwLen ){
+     sqlite3_snprintf(nBuf, zBuf, "OsError 0x%lx (%lu)", lastErrno, lastErrno);
+@@ -4964,6 +4990,12 @@ static int winFullPathnameNoMutex(
+     sqlite3_free(zTemp);
+   }
+   if( zOut ){
++#ifdef SQLITE_PHONE81
++    if( sqlite3Strlen30(zOut)>=MIN(nFull, pVfs->mxPathname) ){
++      sqlite3_free(zOut);
++      return SQLITE_CANTOPEN_FULLPATH;
++    }
++#endif
+ #ifdef __CYGWIN__
+     if( memcmp(zOut, "\\\\?\\", 4) ){
+       sqlite3_snprintf(MIN(nFull, pVfs->mxPathname), zFull, "%s", zOut);
+@@ -5367,4 +5399,9 @@ int sqlite3_os_end(void){
+   return SQLITE_OK;
+ }
+ 
++#ifdef SQLITE_PHONE81_RESTORE_WAL
++# undef SQLITE_OMIT_WAL
++# undef SQLITE_PHONE81_RESTORE_WAL
++#endif
++
+ #endif /* SQLITE_OS_WIN */
+diff --git a/third_party/webrtc/common_audio/BUILD.gn b/third_party/webrtc/common_audio/BUILD.gn
+index 04c7aaa..36923af 100644
+--- a/third_party/webrtc/common_audio/BUILD.gn
++++ b/third_party/webrtc/common_audio/BUILD.gn
+@@ -90,13 +90,13 @@ rtc_source_set("mock_common_audio") {
+ rtc_source_set("common_audio_c_arm_asm") {
+   sources = []
+   deps = []
+-  if (current_cpu == "arm") {
++  if (current_cpu == "arm" && !is_win) {
+     if (arm_version >= 7) {
+       sources += [ "signal_processing/filter_ar_fast_q12_armv7.S" ]
++      deps += [ "../rtc_base/system:asm_defines" ]
+     } else {
+       sources += [ "signal_processing/filter_ar_fast_q12.c" ]
+     }
+-    deps += [ "../rtc_base/system:asm_defines" ]
+   }
+ }
+ 
+@@ -161,7 +161,7 @@ rtc_library("common_audio_c") {
+     }
+   }
+ 
+-  if (current_cpu != "arm" && current_cpu != "mipsel") {
++  if ((current_cpu != "arm" || is_win) && current_cpu != "mipsel") {
+     sources += [ "signal_processing/filter_ar_fast_q12.c" ]
+   }
+ 
+diff --git a/third_party/webrtc/common_audio/third_party/spl_sqrt_floor/BUILD.gn b/third_party/webrtc/common_audio/third_party/spl_sqrt_floor/BUILD.gn
+index ac862c6..4f0c96a 100644
+--- a/third_party/webrtc/common_audio/third_party/spl_sqrt_floor/BUILD.gn
++++ b/third_party/webrtc/common_audio/third_party/spl_sqrt_floor/BUILD.gn
+@@ -12,7 +12,7 @@ rtc_library("spl_sqrt_floor") {
+   visibility = [ "../..:common_audio_c" ]
+   sources = [ "spl_sqrt_floor.h" ]
+   deps = []
+-  if (current_cpu == "arm") {
++  if (current_cpu == "arm" && !is_win) {
+     sources += [ "spl_sqrt_floor_arm.S" ]
+ 
+     deps += [ "../../../rtc_base/system:asm_defines" ]
 diff --git a/third_party/webrtc/rtc_base/async_dns_resolver.cc b/third_party/webrtc/rtc_base/async_dns_resolver.cc
 index 1353059..bbbdcf5 100644
 --- a/third_party/webrtc/rtc_base/async_dns_resolver.cc
@@ -9958,6 +13640,131 @@ index b0dfda5..92f71f2 100644
      mmap.reset();
      return false;
    }
+diff --git a/ui/gfx/animation/animation_win.cc b/ui/gfx/animation/animation_win.cc
+index ae172ae..4f5c1f8 100644
+--- a/ui/gfx/animation/animation_win.cc
++++ b/ui/gfx/animation/animation_win.cc
+@@ -6,6 +6,14 @@
+ 
+ #include <windows.h>
+ 
++#if defined(WINUWP_8_1)
++#include <windows.ui.viewmanagement.h>
++#include <wrl/client.h>
++
++#include "base/win/core_winrt_util.h"
++#include "base/win/hstring_reference.h"
++#endif
++
+ #include "base/check.h"
+ #include "base/features.h"
+ #include "base/win/win_util.h"
+@@ -26,7 +34,11 @@ bool Animation::ShouldRenderRichAnimationImpl() {
+   if (*has_reduced_motion_platform_parameter_) {
+     return !*prefers_reduced_motion_;
+   }
++#if defined(WINUWP_8_1)
++  return true;
++#else
+   return !base::win::IsCurrentSessionRemote();
++#endif
+ }
+ 
+ // static
+@@ -42,10 +54,25 @@ void Animation::UpdatePrefersReducedMotion() {
+ 
+   // We default to assuming that animations are enabled, to avoid impacting the
+   // experience for users on systems that don't have SPI_GETCLIENTAREAANIMATION.
++#if defined(WINUWP_8_1)
++  Microsoft::WRL::ComPtr<IInspectable> instance;
++  Microsoft::WRL::ComPtr<ABI::Windows::UI::ViewManagement::IUISettings> settings;
++  boolean enabled = true;
++  bool available = SUCCEEDED(base::win::RoActivateInstance(
++                       base::win::HStringReference(
++                           RuntimeClass_Windows_UI_ViewManagement_UISettings)
++                           .Get(),
++                       &instance)) &&
++                   SUCCEEDED(instance.As(&settings)) &&
++                   SUCCEEDED(settings->get_AnimationsEnabled(&enabled));
++  has_reduced_motion_platform_parameter_ = available;
++  prefers_reduced_motion_ = available && !enabled;
++#else
+   BOOL win_anim_enabled = true;
+   has_reduced_motion_platform_parameter_.emplace(::SystemParametersInfo(
+       SPI_GETCLIENTAREAANIMATION, 0, &win_anim_enabled, 0));
+   prefers_reduced_motion_ = !win_anim_enabled;
++#endif
+ }
+ 
+ }  // namespace gfx
+diff --git a/ui/gfx/color_space_win.cc b/ui/gfx/color_space_win.cc
+index e25e885..837996b 100644
+--- a/ui/gfx/color_space_win.cc
++++ b/ui/gfx/color_space_win.cc
+@@ -11,6 +11,7 @@
+ 
+ namespace gfx {
+ 
++#if !defined(WINUWP_8_1)
+ DXVA2_ExtendedFormat ColorSpaceWin::GetExtendedFormat(
+     const ColorSpace& color_space) {
+   DXVA2_ExtendedFormat format{};
+@@ -347,7 +348,10 @@ DXGI_COLOR_SPACE_TYPE ColorSpaceWin::GetDXGIColorSpace(
+   }
+ }
+ 
++#endif  // !defined(WINUWP_8_1)
++
+ DXGI_FORMAT ColorSpaceWin::GetDXGIFormat(const gfx::ColorSpace& color_space) {
++#if !defined(WINUWP_8_1)
+   // The PQ transfer function needs 10 bits.
+   if (color_space.GetTransferID() == gfx::ColorSpace::TransferID::PQ)
+     return DXGI_FORMAT_R10G10B10A2_UNORM;
+@@ -358,6 +362,8 @@ DXGI_FORMAT ColorSpaceWin::GetDXGIFormat(const gfx::ColorSpace& color_space) {
+ 
+   // For now just give everything else 8 bits. We will want to use 10 or 16 bits
+   // for BT2020 gamuts.
++#endif
++  // Phone 8.1 swap chains present SDR. HDR input needs conversion upstream.
+   return DXGI_FORMAT_B8G8R8A8_UNORM;
+ }
+ 
+diff --git a/ui/gfx/color_space_win.h b/ui/gfx/color_space_win.h
+index 7943893..5466f80 100644
+--- a/ui/gfx/color_space_win.h
++++ b/ui/gfx/color_space_win.h
+@@ -6,8 +6,10 @@
+ #define UI_GFX_COLOR_SPACE_WIN_H_
+ 
+ #include <d3d11.h>
++#if !defined(WINUWP_8_1)
+ #include <d3d9.h>
+ #include <dxva2api.h>
++#endif
+ 
+ // Must be included after d3d headers, use #if to avoid lint errors.
+ #if 1
+@@ -20,6 +22,8 @@ namespace gfx {
+ 
+ class COLOR_SPACE_EXPORT ColorSpaceWin {
+  public:
++  // DXVA2 and selectable DXGI color spaces require desktop/newer SDKs.
++#if !defined(WINUWP_8_1)
+   static DXVA2_ExtendedFormat GetExtendedFormat(const ColorSpace& color_space);
+ 
+   // Returns false if the given color space couldn't be supported by DXGI.
+@@ -32,8 +36,10 @@ class COLOR_SPACE_EXPORT ColorSpaceWin {
+   static DXGI_COLOR_SPACE_TYPE GetDXGIColorSpace(const ColorSpace& color_space,
+                                                  bool force_yuv = false);
+ 
++#endif
++
+   // Get DXGI format for swap chain. This will default to 8-bit, but will use
+-  // 10-bit or half-float for HDR color spaces.
++  // 10-bit or half-float for HDR color spaces on HDR-capable platforms.
+   static DXGI_FORMAT GetDXGIFormat(const gfx::ColorSpace& color_space);
+ 
+   static D3D11_VIDEO_PROCESSOR_COLOR_SPACE GetD3D11ColorSpace(
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..c677108 100644
 --- a/v8/BUILD.gn

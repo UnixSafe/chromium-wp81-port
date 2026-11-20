@@ -58,6 +58,23 @@ DEPOT_TOOLS_WIN_TOOLCHAIN=1 ninja -C out/phone81-arm -j8 \
 blockers. A full build still lacks a compatible runtime link, a `CoreWindow`
 rendering path, an APPX package, and device validation.
 
+## Checking Phone SDK imports
+
+The compile probe checks declarations in the Phone SDK headers. The separate
+import audit checks selected symbols in the **Phone 8.1 ARM libraries** before
+linking. It never copies SDK files into the repository:
+
+```sh
+python3 tools/check-phone81-imports.py \
+  --lib-dir "$PHONE81_ARM_LIB" \
+  --llvm-nm /path/to/llvm-nm
+```
+
+The local SDK passed the default seven-symbol audit, including `CreateFile2`,
+`GetOverlappedResultEx`, `RoGetActivationFactory`, `D3D11CreateDevice`, and
+`CreateDXGIFactory2`. An import symbol alone does not prove the API behaves as
+the browser expects on a physical phone.
+
 ## V8 host generator bridge on macOS
 
 V8 requires IA32 host generators for this ARM32 target. Build these four

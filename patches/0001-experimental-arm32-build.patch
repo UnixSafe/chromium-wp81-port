@@ -6449,7 +6449,7 @@ index ee81a45..e53ffd8 100644
      // `tracing::AdaptPerfettoConfigForChrome()`, to make sure all
      // Chrome-specific config adaptations are applied.
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
-index 1afecb8..1d4b40c 100644
+index 1afecb8..9606c94 100644
 --- a/content/shell/BUILD.gn
 +++ b/content/shell/BUILD.gn
 @@ -8,6 +8,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -6518,12 +6518,14 @@ index 1afecb8..1d4b40c 100644
      sources += [
        "common/v8_crashpad_support_win.cc",
        "common/v8_crashpad_support_win.h",
-@@ -454,6 +462,19 @@ static_library("content_shell_lib") {
+@@ -454,6 +462,21 @@ static_library("content_shell_lib") {
      deps += [ "//ui/views" ]
    }
  
 +  if (shell_phone81) {
 +    sources += [
++      "browser/shell_phone_navigation.cc",
++      "browser/shell_phone_navigation.h",
 +      "browser/shell_phone_presenter.cc",
 +      "browser/shell_phone_presenter.h",
 +      "browser/shell_phone_touch.cc",
@@ -6531,14 +6533,14 @@ index 1afecb8..1d4b40c 100644
 +      "browser/shell_phone_window.cc",
 +      "browser/shell_phone_window.h",
 +    ]
-+    deps += [ "//components/viz/common", "//ui/display" ]
++    deps += [ "//components/viz/common", "//skia", "//ui/display" ]
 +    libs = [ "d3d11.lib" ]
 +  }
 +
    if (use_aura) {
      deps += [
        "//ui/aura",
-@@ -755,10 +776,14 @@ if (is_android) {
+@@ -755,10 +778,14 @@ if (is_android) {
    executable("content_shell") {
      testonly = true
  
@@ -6557,7 +6559,7 @@ index 1afecb8..1d4b40c 100644
      }
  
      defines = []
-@@ -767,11 +792,14 @@ if (is_android) {
+@@ -767,11 +794,14 @@ if (is_android) {
        ":content_shell_app",
        ":content_shell_lib",
        ":pak",
@@ -6573,7 +6575,7 @@ index 1afecb8..1d4b40c 100644
      data_deps = [
        ":pak",
        "//tools/v8_context_snapshot",
-@@ -782,7 +810,19 @@ if (is_android) {
+@@ -782,7 +812,19 @@ if (is_android) {
          "//base",
          "//sandbox",
        ]
@@ -6594,7 +6596,7 @@ index 1afecb8..1d4b40c 100644
          defines += [ "WIN_CONSOLE_APP" ]
        } else {
          # Set /SUBSYSTEM:WINDOWS unless a console build has been requested.
-@@ -791,14 +831,12 @@ if (is_android) {
+@@ -791,14 +833,12 @@ if (is_android) {
        }
  
        # Limit pre-loaded modules to improve sandbox coverage in content_shell.
@@ -6845,6 +6847,280 @@ index 0000000..7a69a58
 +  auto source = Make<ShellViewSource>(instance);
 +  return source ? application->Run(source.Get()) : E_OUTOFMEMORY;
 +}
+diff --git a/content/shell/browser/shell_phone_navigation.cc b/content/shell/browser/shell_phone_navigation.cc
+new file mode 100644
+index 0000000..f27b86c
+--- /dev/null
++++ b/content/shell/browser/shell_phone_navigation.cc
+@@ -0,0 +1,207 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/shell/browser/shell_phone_navigation.h"
++
++#include <algorithm>
++#include <array>
++
++#include "base/strings/string_util.h"
++#include "skia/ext/font_utils.h"
++#include "third_party/skia/include/core/SkPaint.h"
++
++namespace content {
++namespace {
++constexpr int kButtonWidth = 48;
++constexpr size_t kMaxAddress = 4096;
++
++void Label(SkCanvas& canvas,
++           const SkFont& font,
++           const SkRect& rect,
++           std::string_view text,
++           SkColor bg,
++           bool center,
++           bool tail = false) {
++  SkPaint paint;
++  paint.setColor(bg);
++  canvas.drawRect(rect, paint);
++  canvas.save();
++  SkRect inner = rect.makeInset(4, 1);
++  canvas.clipRect(inner);
++  paint.setColor(SK_ColorWHITE);
++  paint.setAntiAlias(true);
++  float length =
++      font.measureText(text.data(), text.size(), SkTextEncoding::kUTF8);
++  float x = center ? rect.centerX() - length / 2 : inner.left();
++  if (tail && length > inner.width()) {
++    x = inner.right() - length;
++  }
++  canvas.drawSimpleText(text.data(), text.size(), SkTextEncoding::kUTF8, x,
++                        rect.centerY() + font.getSize() * 0.35f, font, paint);
++  canvas.restore();
++}
++}  // namespace
++
++PhoneNavigation::PhoneNavigation() : font_(skia::DefaultTypeface(), 15) {}
++
++void PhoneNavigation::SetLocation(const GURL& location) {
++  GURL::Replacements redactions;
++  redactions.ClearUsername();
++  redactions.ClearPassword();
++  location_ = location.ReplaceComponents(redactions);
++}
++
++std::vector<PhoneNavigation::Key> PhoneNavigation::Keys(int width,
++                                                        int height) const {
++  const std::array<std::string_view, 4> rows =
++      symbols_ ? std::array<std::string_view, 4>{"1234567890", ":/?#[]@!$&",
++                                                 "'()*+,;=%~", "-._^|{}<>"}
++               : std::array<std::string_view, 4>{"1234567890", "qwertyuiop",
++                                                 "asdfghjkl", "zxcvbnm.-/"};
++  const int row_height = std::min(46, std::max(1, (height - kHeight) / 5));
++  int y = height - 5 * row_height;
++  std::vector<Key> keys;
++  auto add = [&](std::string label, size_t i, size_t count) {
++    keys.push_back({SkRect::MakeLTRB(width * i / count, y,
++                                     width * (i + 1) / count, y + row_height),
++                    std::move(label)});
++  };
++  for (auto row : rows) {
++    for (size_t i = 0; i < row.size(); ++i) {
++      char c = shift_ ? base::ToUpperASCII(row[i]) : row[i];
++      add(std::string(1, c), i, row.size());
++    }
++    y += row_height;
++  }
++  const std::array<std::string_view, 5> controls = {
++      symbols_ ? "ABC" : "#+=", "Shift", "Del", "Clear", "Go"};
++  for (size_t i = 0; i < controls.size(); ++i) {
++    add(std::string(controls[i]), i, controls.size());
++  }
++  return keys;
++}
++
++PhoneNavigation::Result PhoneNavigation::Submit() {
++  std::string address(base::TrimWhitespaceASCII(text_, base::TRIM_ALL));
++  GURL target(address);
++  // A host with an explicit port can initially parse as a custom URL scheme.
++  if (address.find("://") == std::string::npos) {
++    target = GURL("https://" + address);
++  }
++  if (!target.SchemeIsHTTPOrHTTPS() || !target.is_valid() ||
++      !target.has_host()) {
++    invalid_ = true;
++    return {};
++  }
++  editing_ = false;
++  return {Action::kNavigate, std::move(target)};
++}
++
++PhoneNavigation::Result PhoneNavigation::Apply(std::string_view key) {
++  invalid_ = false;
++  if (key == "Go") {
++    return Submit();
++  }
++  if (key == "Shift") {
++    shift_ = !shift_;
++  } else if (key == "ABC" || key == "#+=") {
++    symbols_ = !symbols_;
++  } else if (key == "Clear") {
++    text_.clear();
++    replace_on_type_ = false;
++  } else if (key == "Del") {
++    if (replace_on_type_) {
++      text_.clear();
++    } else if (!text_.empty()) {
++      text_.pop_back();
++    }
++    replace_on_type_ = false;
++  } else {
++    if (replace_on_type_) {
++      text_.clear();
++    }
++    replace_on_type_ = false;
++    if (text_.size() + key.size() <= kMaxAddress) {
++      text_.append(key);
++    }
++  }
++  return {};
++}
++
++PhoneNavigation::Result PhoneNavigation::Tap(int x,
++                                             int y,
++                                             int width,
++                                             int height) {
++  if (y < kHeight) {
++    if (x < kButtonWidth) {
++      if (!editing_) {
++        return {Action::kBack, {}};
++      }
++      editing_ = false;
++    } else if (x >= width - kButtonWidth) {
++      if (editing_) {
++        return Submit();
++      }
++      return {Action::kReload, {}};
++    } else if (!editing_) {
++      text_ = location_.SchemeIsHTTPOrHTTPS() ? location_.spec() : "";
++      editing_ = replace_on_type_ = true;
++      shift_ = symbols_ = invalid_ = false;
++    }
++  } else if (editing_) {
++    for (auto& key : Keys(width, height)) {
++      if (key.rect.contains(x, y)) {
++        return Apply(key.label);
++      }
++    }
++  }
++  return {};
++}
++
++PhoneNavigation::Result PhoneNavigation::Character(unsigned character) {
++  if (!editing_) {
++    return {};
++  }
++  if (character == 13) {
++    return Submit();
++  }
++  if (character == 8) {
++    return Apply("Del");
++  }
++  if (character == 27) {
++    editing_ = false;
++    return {};
++  }
++  if (character >= 32 && character <= 126) {
++    return Apply(std::string(1, static_cast<char>(character)));
++  }
++  return {};
++}
++
++void PhoneNavigation::Draw(SkCanvas& canvas, int width, int height) const {
++  constexpr SkColor bar = 0xff203241, field = 0xff344957, button = 0xff155b85;
++  Label(canvas, font_, SkRect::MakeXYWH(0, 0, kButtonWidth, kHeight),
++        editing_ ? "Cancel" : "Back", bar, true);
++  std::string_view address = editing_ ? text_ : location_.spec();
++  if (address.empty()) {
++    address = "Enter URL";
++  }
++  Label(canvas, font_,
++        SkRect::MakeLTRB(kButtonWidth, 0, width - kButtonWidth, kHeight),
++        address,
++        invalid_                       ? 0xff8c302e
++        : replace_on_type_ && editing_ ? button
++                                       : field,
++        false, editing_ && !replace_on_type_);
++  Label(canvas, font_,
++        SkRect::MakeLTRB(width - kButtonWidth, 0, width, kHeight),
++        editing_ ? "Go" : "Reload", bar, true);
++  if (editing_) {
++    for (auto& key : Keys(width, height)) {
++      Label(canvas, font_, key.rect.makeInset(0.5f, 0.5f), key.label,
++            key.label == "Go" ? button : bar, true);
++    }
++  }
++}
++}  // namespace content
+diff --git a/content/shell/browser/shell_phone_navigation.h b/content/shell/browser/shell_phone_navigation.h
+new file mode 100644
+index 0000000..b3e5410
+--- /dev/null
++++ b/content/shell/browser/shell_phone_navigation.h
+@@ -0,0 +1,55 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_SHELL_BROWSER_SHELL_PHONE_NAVIGATION_H_
++#define CONTENT_SHELL_BROWSER_SHELL_PHONE_NAVIGATION_H_
++
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "third_party/skia/include/core/SkCanvas.h"
++#include "third_party/skia/include/core/SkFont.h"
++#include "url/gurl.h"
++
++namespace content {
++
++// The Phone CoreWindow has no XAML text box. Keep browser-owned input separate
++// from the document so a page cannot intercept address entry or the Go action.
++class PhoneNavigation {
++ public:
++  static constexpr int kHeight = 44;
++  enum class Action { kNone, kBack, kReload, kNavigate };
++  struct Result {
++    Action action = Action::kNone;
++    GURL url;
++  };
++
++  PhoneNavigation();
++  void SetLocation(const GURL& location);
++  bool OwnsPoint(float y) const { return editing_ || y < kHeight; }
++  Result Tap(int x, int y, int width, int height);
++  Result Character(unsigned character);
++  bool editing() const { return editing_; }
++  void Draw(SkCanvas& canvas, int width, int height) const;
++
++ private:
++  struct Key {
++    SkRect rect;
++    std::string label;
++  };
++  std::vector<Key> Keys(int width, int height) const;
++  Result Apply(std::string_view key);
++  Result Submit();
++  GURL location_;
++  std::string text_;
++  bool editing_ = false;
++  bool replace_on_type_ = false;
++  bool shift_ = false;
++  bool symbols_ = false;
++  bool invalid_ = false;
++  SkFont font_;
++};
++}  // namespace content
++#endif
 diff --git a/content/shell/browser/shell_phone_presenter.cc b/content/shell/browser/shell_phone_presenter.cc
 new file mode 100644
 index 0000000..1dfc1e6
@@ -6976,10 +7252,10 @@ index 0000000..4729ca4
 +#endif
 diff --git a/content/shell/browser/shell_phone_touch.cc b/content/shell/browser/shell_phone_touch.cc
 new file mode 100644
-index 0000000..8cc7ff4
+index 0000000..2693f73
 --- /dev/null
 +++ b/content/shell/browser/shell_phone_touch.cc
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,96 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -7036,8 +7312,29 @@ index 0000000..8cc7ff4
 +        SUCCEEDED((window_.Get()->*registration)(handler.Get(), token)));
 +}
 +
-+PhoneTouchInput::PhoneTouchInput(core::ICoreWindow* window, Callback callback)
-+    : window_(window), callback_(std::move(callback)) {
++PhoneTouchInput::PhoneTouchInput(core::ICoreWindow* window,
++                                 Callback callback,
++                                 CharacterCallback character_callback)
++    : window_(window),
++      callback_(std::move(callback)),
++      character_callback_(std::move(character_callback)) {
++  using Handler =
++      foundation::ITypedEventHandler<core::CoreWindow*,
++                                     core::CharacterReceivedEventArgs*>;
++  auto handler = Microsoft::WRL::Callback<Handler>(
++      [this](core::ICoreWindow*, core::ICharacterReceivedEventArgs* args) {
++        UINT32 code;
++        if (SUCCEEDED(args->get_KeyCode(&code)) &&
++            character_callback_.Run(code)) {
++          ComPtr<core::ICoreWindowEventArgs> common;
++          if (SUCCEEDED(args->QueryInterface(IID_PPV_ARGS(&common)))) {
++            common->put_Handled(true);
++          }
++        }
++        return S_OK;
++      });
++  CHECK(handler && SUCCEEDED(window_->add_CharacterReceived(
++                       handler.Get(), &character_token_)));
 +  BindPointer(&core::ICoreWindow::add_PointerPressed,
 +              ui::EventType::kTouchPressed, &pressed_);
 +  BindPointer(&core::ICoreWindow::add_PointerMoved, ui::EventType::kTouchMoved,
@@ -7048,6 +7345,7 @@ index 0000000..8cc7ff4
 +              ui::EventType::kTouchCancelled, &lost_);
 +}
 +PhoneTouchInput::~PhoneTouchInput() {
++  window_->remove_CharacterReceived(character_token_);
 +  window_->remove_PointerPressed(pressed_);
 +  window_->remove_PointerMoved(moved_);
 +  window_->remove_PointerReleased(released_);
@@ -7056,10 +7354,10 @@ index 0000000..8cc7ff4
 +}  // namespace content
 diff --git a/content/shell/browser/shell_phone_touch.h b/content/shell/browser/shell_phone_touch.h
 new file mode 100644
-index 0000000..a158dc6
+index 0000000..a380fc6
 --- /dev/null
 +++ b/content/shell/browser/shell_phone_touch.h
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,40 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -7080,8 +7378,10 @@ index 0000000..a158dc6
 + public:
 +  using Callback =
 +      base::RepeatingCallback<void(ui::EventType, UINT32, float, float)>;
++  using CharacterCallback = base::RepeatingCallback<bool(UINT32)>;
 +  PhoneTouchInput(ABI::Windows::UI::Core::ICoreWindow* window,
-+                  Callback callback);
++                  Callback callback,
++                  CharacterCallback character_callback);
 +  ~PhoneTouchInput();
 +
 + private:
@@ -7091,6 +7391,8 @@ index 0000000..a158dc6
 +                   EventRegistrationToken* token);
 +  Microsoft::WRL::ComPtr<ABI::Windows::UI::Core::ICoreWindow> window_;
 +  Callback callback_;
++  CharacterCallback character_callback_;
++  EventRegistrationToken character_token_{};
 +  std::set<UINT32> contacts_;
 +  EventRegistrationToken pressed_{}, moved_{}, released_{}, lost_{};
 +};
@@ -7098,10 +7400,10 @@ index 0000000..a158dc6
 +#endif
 diff --git a/content/shell/browser/shell_phone_window.cc b/content/shell/browser/shell_phone_window.cc
 new file mode 100644
-index 0000000..971f46c
+index 0000000..df38fd5
 --- /dev/null
 +++ b/content/shell/browser/shell_phone_window.cc
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,294 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -7113,6 +7415,7 @@ index 0000000..971f46c
 +#include <wrl/client.h>
 +#include <wrl/wrappers/corewrappers.h>
 +
++#include <map>
 +#include <utility>
 +
 +#include "base/check.h"
@@ -7125,6 +7428,8 @@ index 0000000..971f46c
 +#include "components/viz/common/frame_sinks/copy_output_result.h"
 +#include "content/public/browser/render_widget_host_view.h"
 +#include "content/public/browser/web_contents.h"
++#include "content/shell/browser/shell.h"
++#include "content/shell/browser/shell_phone_navigation.h"
 +#include "content/shell/browser/shell_phone_presenter.h"
 +#include "content/shell/browser/shell_phone_touch.h"
 +#include "ui/aura/window.h"
@@ -7167,7 +7472,8 @@ index 0000000..971f46c
 +    OnAcceleratedWidgetAvailable();
 +    touch_ = std::make_unique<PhoneTouchInput>(
 +        window_.Get(),
-+        base::BindRepeating(&PhoneWindow::OnTouch, base::Unretained(this)));
++        base::BindRepeating(&PhoneWindow::OnTouch, base::Unretained(this)),
++        base::BindRepeating(&PhoneWindow::OnCharacter, base::Unretained(this)));
 +  }
 +
 +  ~PhoneWindow() override {
@@ -7179,14 +7485,76 @@ index 0000000..971f46c
 +
 +  void ShowContents(WebContents* contents) {
 +    contents_ = contents->GetWeakPtr();
++    page_.reset();
++    contents->GetNativeView()->SetBounds(PageBounds());
++    navigation_.SetLocation(contents->GetVisibleURL());
++    Draw();
 +    contents->Focus();
 +    contents->WasShown();
 +    timer_.Start(FROM_HERE, base::Milliseconds(33), this, &PhoneWindow::Tick);
 +  }
 +
++  void SetLocation(WebContents* contents, const GURL& url) {
++    if (contents_.get() == contents) {
++      navigation_.SetLocation(url);
++      Draw();
++    }
++  }
++
 + private:
++  gfx::Rect PageBounds() const {
++    return gfx::Rect(0, PhoneNavigation::kHeight, bounds_.width(),
++                     std::max(0, bounds_.height() - PhoneNavigation::kHeight));
++  }
++
++  void Navigate(PhoneNavigation::Result result) {
++    Draw();
++    auto* shell = contents_ ? Shell::FromWebContents(contents_.get()) : nullptr;
++    if (!shell) {
++      return;
++    }
++    switch (result.action) {
++      case PhoneNavigation::Action::kBack:
++        shell->GoBackOrForward(-1);
++        break;
++      case PhoneNavigation::Action::kReload:
++        shell->Reload();
++        break;
++      case PhoneNavigation::Action::kNavigate:
++        shell->LoadURL(result.url);
++        break;
++      case PhoneNavigation::Action::kNone:
++        break;
++    }
++  }
++
++  bool OnCharacter(unsigned character) {
++    if (!navigation_.editing()) {
++      return false;
++    }
++    Navigate(navigation_.Character(character));
++    return true;
++  }
++
 +  void OnTouch(ui::EventType type, UINT32 id, float x, float y) {
 +    gfx::PointF location(x, y);
++    if (type == ui::EventType::kTouchPressed && navigation_.OwnsPoint(y)) {
++      navigation_contacts_[id] = location;
++      return;
++    }
++    auto contact = navigation_contacts_.find(id);
++    if (contact != navigation_contacts_.end()) {
++      if (type == ui::EventType::kTouchReleased ||
++          type == ui::EventType::kTouchCancelled) {
++        bool tapped = type == ui::EventType::kTouchReleased &&
++                      (location - contact->second).LengthSquared() < 64;
++        navigation_contacts_.erase(contact);
++        if (tapped) {
++          Navigate(navigation_.Tap(x, y, bounds_.width(), bounds_.height()));
++        }
++      }
++      return;
++    }
 +    ui::TouchEvent event(type, location, location, ui::EventTimeForNow(),
 +                         ui::PointerDetails(ui::EventPointerType::kTouch, id));
 +    SendEventToSink(&event);
@@ -7206,7 +7574,9 @@ index 0000000..971f46c
 +        display::Display(1, next), display::DisplayList::Type::PRIMARY);
 +    SetBoundsInPixels(next);
 +    if (contents_) {
-+      contents_->GetNativeView()->SetBounds(bounds_);
++      contents_->GetNativeView()->SetBounds(PageBounds());
++      page_.reset();
++      Draw();
 +    }
 +  }
 +
@@ -7225,7 +7595,7 @@ index 0000000..971f46c
 +    }
 +    pending_ = true;
 +    view->CopyFromSurface(
-+        {}, bounds_.size(), base::Milliseconds(250),
++        {}, PageBounds().size(), base::Milliseconds(250),
 +        base::BindPostTaskToCurrentDefault(base::BindOnce(
 +            &PhoneWindow::OnFrame, weak_factory_.GetWeakPtr(), contents_)));
 +  }
@@ -7237,23 +7607,33 @@ index 0000000..971f46c
 +      return;
 +    }
 +    const SkBitmap& bitmap = result->bitmap;
-+    if (bitmap.width() != bounds_.width() ||
-+        bitmap.height() != bounds_.height() || !bitmap.getPixels()) {
++    if (bitmap.width() != PageBounds().width() ||
++        bitmap.height() != PageBounds().height() || !bitmap.getPixels()) {
 +      return;
 +    }
-+    SkBitmap bgra;
-+    const SkBitmap* frame = &bitmap;
-+    if (bitmap.colorType() != kBGRA_8888_SkColorType) {
-+      if (!bgra.tryAllocPixels(
-+              bitmap.info().makeColorType(kBGRA_8888_SkColorType)) ||
-+          !bitmap.readPixels(bgra.pixmap())) {
-+        return;
-+      }
-+      frame = &bgra;
++    page_ = bitmap;
++    Draw();
++  }
++
++  void Draw() {
++    if (bounds_.IsEmpty()) {
++      return;
 +    }
++    SkImageInfo info =
++        SkImageInfo::Make(bounds_.width(), bounds_.height(),
++                          kBGRA_8888_SkColorType, kPremul_SkAlphaType);
++    if (screen_image_.info() != info && !screen_image_.tryAllocPixels(info)) {
++      return;
++    }
++    SkCanvas canvas(screen_image_);
++    canvas.clear(SK_ColorWHITE);
++    if (!page_.drawsNothing()) {
++      canvas.writePixels(page_, 0, PhoneNavigation::kHeight);
++    }
++    navigation_.Draw(canvas, bounds_.width(), bounds_.height());
 +    HRESULT hr =
-+        presenter_.Submit(window_.Get(), frame->width(), frame->height(),
-+                          frame->getPixels(), frame->rowBytes());
++        presenter_.Submit(window_.Get(), bounds_.width(), bounds_.height(),
++                          screen_image_.getPixels(), screen_image_.rowBytes());
 +    if (FAILED(hr) && hr != last_present_error_) {
 +      LOG(ERROR) << "CoreWindow frame presentation failed, HRESULT " << std::hex
 +                 << hr;
@@ -7290,6 +7670,10 @@ index 0000000..971f46c
 +
 +  ComPtr<core::ICoreWindow> window_;
 +  PhoneFramePresenter presenter_;
++  PhoneNavigation navigation_;
++  std::map<UINT32, gfx::PointF> navigation_contacts_;
++  SkBitmap screen_image_;
++  SkBitmap page_;
 +  gfx::Rect bounds_;
 +  base::WeakPtr<WebContents> contents_;
 +  base::RepeatingTimer timer_;
@@ -7307,13 +7691,19 @@ index 0000000..971f46c
 +void ShowPhoneWebContents(aura::WindowTreeHost* host, WebContents* contents) {
 +  static_cast<PhoneWindow*>(host)->ShowContents(contents);
 +}
++void SetPhoneLocation(aura::WindowTreeHost* host,
++                      WebContents* contents,
++                      const GURL& url) {
++  static_cast<PhoneWindow*>(host)->SetLocation(contents, url);
++}
++
 +}  // namespace content
 diff --git a/content/shell/browser/shell_phone_window.h b/content/shell/browser/shell_phone_window.h
 new file mode 100644
-index 0000000..fbe6068
+index 0000000..6cf906d
 --- /dev/null
 +++ b/content/shell/browser/shell_phone_window.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,24 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -7323,6 +7713,8 @@ index 0000000..fbe6068
 +
 +#include <memory>
 +
++class GURL;
++
 +namespace aura {
 +class WindowTreeHost;
 +}
@@ -7331,6 +7723,9 @@ index 0000000..fbe6068
 +class WebContents;
 +std::unique_ptr<aura::WindowTreeHost> CreatePhoneWindowTreeHost();
 +void ShowPhoneWebContents(aura::WindowTreeHost* host, WebContents* contents);
++void SetPhoneLocation(aura::WindowTreeHost* host,
++                      WebContents* contents,
++                      const GURL& url);
 +}  // namespace content
 +#endif
 diff --git a/content/shell/browser/shell_platform_data_aura.cc b/content/shell/browser/shell_platform_data_aura.cc
@@ -7365,7 +7760,7 @@ index 50450e5..69c7f47 100644
    host_->window()->Show();
    host_->window()->SetLayoutManager(
 diff --git a/content/shell/browser/shell_platform_delegate_aura.cc b/content/shell/browser/shell_platform_delegate_aura.cc
-index 907350d..647729f 100644
+index 907350d..d1b2f71 100644
 --- a/content/shell/browser/shell_platform_delegate_aura.cc
 +++ b/content/shell/browser/shell_platform_delegate_aura.cc
 @@ -7,6 +7,9 @@
@@ -7399,6 +7794,19 @@ index 907350d..647729f 100644
  }
  
  void ShellPlatformDelegate::ResizeWebContent(Shell* shell,
+@@ -75,7 +84,11 @@ void ShellPlatformDelegate::EnableUIControl(Shell* shell,
+                                             UIControl control,
+                                             bool is_enabled) {}
+ 
+-void ShellPlatformDelegate::SetAddressBarURL(Shell* shell, const GURL& url) {}
++void ShellPlatformDelegate::SetAddressBarURL(Shell* shell, const GURL& url) {
++#if defined(WINUWP_8_1)
++  SetPhoneLocation(platform_->aura->host(), shell->web_contents(), url);
++#endif
++}
+ 
+ void ShellPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {}
+ 
 diff --git a/crypto/BUILD.gn b/crypto/BUILD.gn
 index bb7c677..b990fe0 100644
 --- a/crypto/BUILD.gn

@@ -20,6 +20,7 @@ DEFAULT_SYMBOLS = (
     "RoGetActivationFactory",
     "D3D11CreateDevice",
     "CreateDXGIFactory2",
+    "DWriteCreateFactory",
 )
 
 

@@ -70,10 +70,10 @@ python3 tools/check-phone81-imports.py \
   --llvm-nm /path/to/llvm-nm
 ```
 
-The local SDK passed the default seven-symbol audit, including `CreateFile2`,
-`GetOverlappedResultEx`, `RoGetActivationFactory`, `D3D11CreateDevice`, and
-`CreateDXGIFactory2`. An import symbol alone does not prove the API behaves as
-the browser expects on a physical phone.
+The local SDK passed the default eight-symbol audit, including `CreateFile2`,
+`GetOverlappedResultEx`, `RoGetActivationFactory`, `D3D11CreateDevice`,
+`CreateDXGIFactory2`, and `DWriteCreateFactory`. An import symbol alone does not
+prove the API behaves as the browser expects on a physical phone.
 
 ## V8 host generator bridge on macOS
 

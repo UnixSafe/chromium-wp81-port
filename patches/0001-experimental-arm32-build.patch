@@ -22423,10 +22423,20 @@ index a89e6c2..4cb1924 100644
        data_deps += [
          "//third_party/angle:libEGL",
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
-index 091e894..c677108 100644
+index 091e894..b1c728a 100644
 --- a/v8/BUILD.gn
 +++ b/v8/BUILD.gn
-@@ -1247,7 +1247,7 @@ if (target_os == "android") {
+@@ -21,6 +21,9 @@ import("//third_party/icu/config.gni")
+ import("gni/cluster_build.gni")
+ import("gni/snapshot_toolchain.gni")
+ import("gni/v8.gni")
++if (build_with_chromium) {
++  import("//build/config/win/phone81.gni")
++}
+ 
+ if (is_clang) {
+   import("//build/config/clang/clang.gni")
+@@ -1247,7 +1250,7 @@ if (target_os == "android") {
  } else if (target_os == "mac") {
    enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
    enabled_external_v8_defines += [ "V8_TARGET_OS_MACOS" ]
@@ -22435,7 +22445,7 @@ index 091e894..c677108 100644
    enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
    enabled_external_v8_defines += [ "V8_TARGET_OS_WIN" ]
  } else if (target_os == "chromeos") {
-@@ -2114,6 +2114,7 @@ template("asm_to_inline_asm") {
+@@ -2114,6 +2117,7 @@ template("asm_to_inline_asm") {
      sources = [ "$target_gen_dir/embedded${suffix}.S" ]
      outputs = [ "$target_gen_dir/embedded${suffix}.cc" ]
      args = invoker.args
@@ -22443,7 +22453,7 @@ index 091e894..c677108 100644
      args += [
        rebase_path("$target_gen_dir/embedded${suffix}.S", root_build_dir),
        rebase_path("$target_gen_dir/embedded${suffix}.cc", root_build_dir),
-@@ -3287,6 +3288,11 @@ template("run_mksnapshot") {
+@@ -3287,6 +3291,11 @@ template("run_mksnapshot") {
        data += [ "$root_out_dir/mksnapshot_output${suffix}.log" ]
      }
  
@@ -22455,7 +22465,7 @@ index 091e894..c677108 100644
      args += [
        "./" + rebase_path(get_label_info(":mksnapshot($v8_snapshot_toolchain)",
                                          "root_out_dir") + "/mksnapshot",
-@@ -3297,7 +3303,7 @@ template("run_mksnapshot") {
+@@ -3297,7 +3306,7 @@ template("run_mksnapshot") {
        # target toolchains.  The same host binary is used to generate both, so
        # mksnapshot needs to know which target OS to use at runtime.  It's weird,
        # but the target OS is really |current_os|.
@@ -22464,7 +22474,25 @@ index 091e894..c677108 100644
        "--target_arch=$current_cpu",
  
        "--embedded_src",
-@@ -8549,8 +8555,68 @@ if (v8_enable_webassembly) {
+@@ -7981,6 +7990,17 @@ v8_component("v8_libbase") {
+       "ws2_32.lib",
+     ]
+ 
++    if (build_with_chromium && current_os == "winuwp" && phone81_port) {
++      # Windows Phone 8.1 has neither dbghelp nor winmm. Use V8's portable
++      # address-only stack trace (no in-process symbolization).
++      sources -= [ "src/base/debug/stack_trace_win.cc" ]
++      sources += [ "src/base/debug/stack_trace_fuchsia.cc" ]
++      libs -= [
++        "dbghelp.lib",
++        "winmm.lib",
++      ]
++    }
++
+     if (v8_enable_etw_stack_walking) {
+       libs += [ "advapi32.lib" ]  # Needed for TraceLoggingProvider.h
+     }
+@@ -8549,8 +8569,68 @@ if (v8_enable_webassembly) {
  # Executables
  #
  
@@ -22534,7 +22562,7 @@ index 091e894..c677108 100644
      visibility = [ ":*" ]  # Only targets in this file can depend on this.
  
      include_dirs = [ "." ]
-@@ -8575,7 +8641,7 @@ if (current_toolchain == v8_generator_toolchain) {
+@@ -8575,7 +8655,7 @@ if (current_toolchain == v8_generator_toolchain) {
  }
  
  if (current_toolchain == v8_snapshot_toolchain) {
@@ -22543,7 +22571,7 @@ index 091e894..c677108 100644
      sources = [
        "src/snapshot/builtins-effects-dummy.cc",
        "src/snapshot/embedded/embedded-empty.cc",
-@@ -8646,7 +8712,7 @@ if (current_toolchain == v8_snapshot_toolchain) {
+@@ -8646,7 +8726,7 @@ if (current_toolchain == v8_snapshot_toolchain) {
  }
  
  if (current_toolchain == v8_snapshot_toolchain) {
@@ -22552,7 +22580,7 @@ index 091e894..c677108 100644
      visibility = [ ":*" ]  # Only targets in this file can depend on this.
  
      sources = [ "src/torque/torque.cc" ]
-@@ -8700,7 +8766,7 @@ v8_executable("torque-language-server") {
+@@ -8700,7 +8780,7 @@ v8_executable("torque-language-server") {
  
  if (v8_enable_i18n_support) {
    if (current_toolchain == v8_generator_toolchain) {
@@ -22562,10 +22590,10 @@ index 091e894..c677108 100644
  
        sources = [
 diff --git a/v8/src/base/cpu/cpu-arm.cc b/v8/src/base/cpu/cpu-arm.cc
-index 4a29ee6..f86f2f1 100644
+index 4a29ee6..e3237c4 100644
 --- a/v8/src/base/cpu/cpu-arm.cc
 +++ b/v8/src/base/cpu/cpu-arm.cc
-@@ -324,6 +324,23 @@ void CPU::DetectFeatures() {
+@@ -324,6 +324,25 @@ void CPU::DetectFeatures() {
    }
    has_idiva_ = (cpu_flags & ARM_CPU_FLAG_IDIV) != 0;
  
@@ -22582,9 +22610,11 @@ index 4a29ee6..f86f2f1 100644
 +  has_neon_ = IsProcessorFeaturePresent(PF_ARM_NEON_INSTRUCTIONS_AVAILABLE);
 +  has_vfp3_d32_ = IsProcessorFeaturePresent(PF_ARM_VFP_32_REGISTERS_AVAILABLE);
 +  has_idiva_ = IsProcessorFeaturePresent(PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE);
++#ifdef PF_ARM_V8_INSTRUCTIONS_AVAILABLE  // Absent from the Phone 8.1 SDK.
 +  if (IsProcessorFeaturePresent(PF_ARM_V8_INSTRUCTIONS_AVAILABLE)) {
 +    architecture_ = 8;
 +  }
++#endif
 +
  #endif  // V8_OS_LINUX
  #elif V8_HOST_ARCH_ARM64
@@ -22624,10 +22654,127 @@ index 9c25a7d..ed7d509 100644
  
  #define TRAP_SEQUENCE1_() asm volatile("int3")
 diff --git a/v8/src/base/platform/platform-win32.cc b/v8/src/base/platform/platform-win32.cc
-index 47c60a4..7a2813b 100644
+index 47c60a4..6ec6215 100644
 --- a/v8/src/base/platform/platform-win32.cc
 +++ b/v8/src/base/platform/platform-win32.cc
-@@ -1712,6 +1712,18 @@ int OS::ActivationFrameAlignment() {
+@@ -19,7 +19,17 @@
+ 
+ #include <windows.h>
+ 
++#include "src/base/platform/win32-phone81.h"
++
+ // This has to come after windows.h.
++#if defined(V8_OS_WINPHONE81)
++// Windows Phone 8.1: the version, debug-help, multimedia, psapi and toolhelp
++// headers are desktop-only; see the V8_OS_WINPHONE81 paths below.
++#include <malloc.h>             // For _msize()
++#include <processthreadsapi.h>  // For GetProcessMitigationPolicy().
++// winmm is unavailable: GetTickCount64 has the same millisecond unit.
++static DWORD timeGetTime() { return static_cast<DWORD>(::GetTickCount64()); }
++#else
+ #include <VersionHelpers.h>
+ #include <dbghelp.h>            // For SymLoadModule64 and al.
+ #include <malloc.h>             // For _msize()
+@@ -27,6 +37,7 @@
+ #include <processthreadsapi.h>  // For GetProcessMitigationPolicy().
+ #include <psapi.h>              // For GetProcessMemoryInfo().
+ #include <tlhelp32.h>           // For Module32First and al.
++#endif
+ 
+ #include <limits>
+ #include <optional>
+@@ -486,6 +497,9 @@ int OS::GetUserTime(uint32_t* secs,  uint32_t* usecs) {
+ }
+ 
+ int OS::GetPeakMemoryUsageKb() {
++#if defined(V8_OS_WINPHONE81)
++  return -1;  // No psapi process counters for Phone 8.1 apps.
++#else
+   constexpr int KB = 1024;
+ 
+   PROCESS_MEMORY_COUNTERS mem_counters;
+@@ -496,6 +510,7 @@ int OS::GetPeakMemoryUsageKb() {
+   if (ret == 0) return -1;
+ 
+   return static_cast<int>(mem_counters.PeakWorkingSetSize / KB);
++#endif
+ }
+ 
+ // Returns current time as the number of milliseconds since
+@@ -581,6 +596,10 @@ static OutputMode output_mode = UNKNOWN;  // Current output mode.
+ static bool HasConsole() {
+   // Only check the first time. Eventual race conditions are not a problem,
+   // because all threads will eventually determine the same mode.
++#if defined(V8_OS_WINPHONE81)
++  // Phone 8.1 apps have no console or standard handles.
++  output_mode = ODS;
++#else
+   if (output_mode == UNKNOWN) {
+     // We cannot just check that the standard output is attached to a console
+     // because this would fail if output is redirected to a file. Therefore we
+@@ -592,6 +611,7 @@ static bool HasConsole() {
+     else
+       output_mode = ODS;
+   }
++#endif
+   return output_mode == CONSOLE;
+ }
+ 
+@@ -647,6 +667,9 @@ bool OS::isDirectorySeparator(const char ch) {
+ 
+ 
+ FILE* OS::OpenTemporaryFile() {
++#if defined(V8_OS_WINPHONE81)
++  return nullptr;  // No %TEMP% or GetTempFileName for Phone 8.1 apps.
++#else
+   // tmpfile_s tries to use the root dir, don't use it.
+   char tempPathBuffer[MAX_PATH];
+   DWORD path_result = 0;
+@@ -661,6 +684,7 @@ FILE* OS::OpenTemporaryFile() {
+     Remove(tempNameBuffer);  // Delete on close.
+   }
+   return result;
++#endif
+ }
+ 
+ 
+@@ -748,6 +772,9 @@ static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
+ namespace {
+ 
+ bool UserShadowStackEnabled() {
++#if defined(V8_OS_WINPHONE81)
++  return false;  // CET shadow stacks are an x64 Windows 10 feature.
++#else
+   auto is_user_cet_available_in_environment =
+       reinterpret_cast<decltype(&IsUserCetAvailableInEnvironment)>(
+           ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"),
+@@ -773,6 +800,7 @@ bool UserShadowStackEnabled() {
+   }
+ 
+   return uss_policy.EnableUserShadowStack;
++#endif
+ }
+ 
+ }  // namespace
+@@ -1494,7 +1522,7 @@ bool AddressSpaceReservation::DecommitPages(void* address, size_t size) {
+ #endif
+ 
+ // DbgHelp isn't supported on MinGW yet
+-#ifndef __MINGW32__
++#if !defined(__MINGW32__) && !defined(V8_OS_WINPHONE81)
+ // DbgHelp.h functions.
+ using DLL_FUNC_TYPE(SymInitialize) = BOOL(__stdcall*)(IN HANDLE hProcess,
+                                                       IN PSTR UserSearchPath,
+@@ -1691,7 +1719,7 @@ std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
+ 
+ void OS::SignalCodeMovingGC() {}
+ 
+-#else  // __MINGW32__
++#else  // __MINGW32__ || V8_OS_WINPHONE81 (no dbghelp/toolhelp)
+ std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
+   return std::vector<OS::SharedLibraryAddress>();
+ }
+@@ -1712,6 +1740,18 @@ int OS::ActivationFrameAlignment() {
  #endif
  }
  
@@ -22646,6 +22793,274 @@ index 47c60a4..7a2813b 100644
  #if defined(V8_OS_WIN)
  void EnsureConsoleOutputWin32() {
    UINT new_flags =
+diff --git a/v8/src/base/platform/semaphore.cc b/v8/src/base/platform/semaphore.cc
+index 2ac431d..07141ee 100644
+--- a/v8/src/base/platform/semaphore.cc
++++ b/v8/src/base/platform/semaphore.cc
+@@ -8,6 +8,7 @@
+ #include <dispatch/dispatch.h>
+ #elif V8_OS_WIN
+ #include <windows.h>
++#include "src/base/platform/win32-phone81.h"
+ #endif
+ 
+ #include <errno.h>
+@@ -109,7 +110,12 @@ bool Semaphore::WaitFor(const TimeDelta& rel_time) {
+ 
+ Semaphore::Semaphore(int count) {
+   DCHECK_GE(count, 0);
++#if defined(V8_OS_WINPHONE81)
++  native_handle_ = ::CreateSemaphoreExW(nullptr, count, 0x7FFFFFFF, nullptr, 0,
++                                        SEMAPHORE_ALL_ACCESS);
++#else
+   native_handle_ = ::CreateSemaphoreA(nullptr, count, 0x7FFFFFFF, nullptr);
++#endif
+   DCHECK_NOT_NULL(native_handle_);
+ }
+ 
+diff --git a/v8/src/base/platform/time.cc b/v8/src/base/platform/time.cc
+index 8c824e3..2fb1194 100644
+--- a/v8/src/base/platform/time.cc
++++ b/v8/src/base/platform/time.cc
+@@ -31,6 +31,7 @@
+ 
+ #if V8_OS_WIN
+ #include <windows.h>
++#include "src/base/platform/win32-phone81.h"
+ 
+ // This has to come after windows.h.
+ #include <mmsystem.h>  // For timeGetTime().
+@@ -524,7 +525,13 @@ namespace {
+ // We define a wrapper to adapt between the __stdcall and __cdecl call of the
+ // mock function, and to avoid a static constructor.  Assigning an import to a
+ // function pointer directly would require setup code to fetch from the IAT.
++#if defined(V8_OS_WINPHONE81)
++// winmm (timeGetTime) is unavailable to Phone 8.1 apps; GetTickCount64 has
++// the same millisecond unit.
++DWORD timeGetTimeWrapper() { return static_cast<DWORD>(::GetTickCount64()); }
++#else
+ DWORD timeGetTimeWrapper() { return timeGetTime(); }
++#endif
+ 
+ DWORD (*g_tick_function)(void) = &timeGetTimeWrapper;
+ 
+@@ -703,7 +710,7 @@ TimeTicks InitialTimeTicksNowFunction() {
+   return g_time_ticks_now_function();
+ }
+ 
+-#if V8_HOST_ARCH_ARM64
++#if V8_HOST_ARCH_ARM64 || V8_HOST_ARCH_ARM
+ // From MSDN, FILETIME "Contains a 64-bit value representing the number of
+ // 100-nanosecond intervals since January 1, 1601 (UTC)."
+ int64_t FileTimeToMicroseconds(const FILETIME& ft) {
+@@ -821,7 +828,7 @@ ThreadTicks ThreadTicks::Now() {
+ ThreadTicks ThreadTicks::GetForThread(const HANDLE& thread_handle) {
+   DCHECK(IsSupported());
+ 
+-#if V8_HOST_ARCH_ARM64
++#if V8_HOST_ARCH_ARM64 || V8_HOST_ARCH_ARM
+   // QueryThreadCycleTime versus TSCTicksPerSecond doesn't have much relation to
+   // actual elapsed time on Windows on Arm, because QueryThreadCycleTime is
+   // backed by the actual number of CPU cycles executed, rather than a
+@@ -859,12 +866,12 @@ bool ThreadTicks::IsSupportedWin() {
+ 
+ // static
+ void ThreadTicks::WaitUntilInitializedWin() {
+-#ifndef V8_HOST_ARCH_ARM64
++#if !V8_HOST_ARCH_ARM64 && !V8_HOST_ARCH_ARM
+   while (TSCTicksPerSecond() == 0) ::Sleep(10);
+ #endif
+ }
+ 
+-#ifndef V8_HOST_ARCH_ARM64
++#if !V8_HOST_ARCH_ARM64 && !V8_HOST_ARCH_ARM
+ double ThreadTicks::TSCTicksPerSecond() {
+   DCHECK(IsSupported());
+ 
+@@ -923,7 +930,7 @@ double ThreadTicks::TSCTicksPerSecond() {
+ 
+   return tsc_ticks_per_second;
+ }
+-#endif  // !defined(V8_HOST_ARCH_ARM64)
++#endif  // !V8_HOST_ARCH_ARM64 && !V8_HOST_ARCH_ARM
+ #endif  // V8_OS_WIN
+ 
+ }  // namespace base
+diff --git a/v8/src/base/platform/time.h b/v8/src/base/platform/time.h
+index 813241e..d204cbb 100644
+--- a/v8/src/base/platform/time.h
++++ b/v8/src/base/platform/time.h
+@@ -498,7 +498,7 @@ class V8_BASE_EXPORT ThreadTicks final
+   explicit constexpr ThreadTicks(int64_t ticks) : TimeBase(ticks) {}
+ 
+ #if V8_OS_WIN
+-#if V8_HOST_ARCH_ARM64
++#if V8_HOST_ARCH_ARM64 || V8_HOST_ARCH_ARM
+   // TSCTicksPerSecond is not supported on Windows on Arm systems because the
+   // cycle-counting methods use the actual CPU cycle count, and not a consistent
+   // incrementing counter.
+diff --git a/v8/src/base/platform/win32-phone81.h b/v8/src/base/platform/win32-phone81.h
+new file mode 100644
+index 0000000..04431d7
+--- /dev/null
++++ b/v8/src/base/platform/win32-phone81.h
+@@ -0,0 +1,144 @@
++// Copyright 2026 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Windows Phone 8.1 declarations for V8's Win32 platform layer.
++//
++// The Phone 8.1 kernel exports these functions through WindowsPhoneCore.lib,
++// but the application-family SDK headers hide their declarations. Each one
++// below was checked against the exports of the real Phone 8.1 ARM import
++// library. Include this header after <windows.h>.
++
++#ifndef V8_BASE_PLATFORM_WIN32_PHONE81_H_
++#define V8_BASE_PLATFORM_WIN32_PHONE81_H_
++
++#include <windows.h>
++
++#if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++
++#define V8_OS_WINPHONE81 1
++
++extern "C" {
++
++typedef struct _MEMORYSTATUSEX {
++  DWORD dwLength;
++  DWORD dwMemoryLoad;
++  DWORDLONG ullTotalPhys;
++  DWORDLONG ullAvailPhys;
++  DWORDLONG ullTotalPageFile;
++  DWORDLONG ullAvailPageFile;
++  DWORDLONG ullTotalVirtual;
++  DWORDLONG ullAvailVirtual;
++  DWORDLONG ullAvailExtendedVirtual;
++} MEMORYSTATUSEX, *LPMEMORYSTATUSEX;
++
++__declspec(dllimport) BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX);
++__declspec(dllimport) VOID WINAPI GetSystemInfo(LPSYSTEM_INFO);
++__declspec(dllimport) DWORD WINAPI WaitForSingleObject(HANDLE, DWORD);
++__declspec(dllimport) BOOL WINAPI FlushInstructionCache(HANDLE, LPCVOID,
++                                                        SIZE_T);
++__declspec(dllimport) BOOL WINAPI GetThreadTimes(HANDLE, LPFILETIME,
++                                                 LPFILETIME, LPFILETIME,
++                                                 LPFILETIME);
++__declspec(dllimport) DWORD WINAPI SuspendThread(HANDLE);
++__declspec(dllimport) DWORD WINAPI ResumeThread(HANDLE);
++__declspec(dllimport) BOOL WINAPI GetThreadContext(HANDLE, LPCONTEXT);
++__declspec(dllimport) HMODULE WINAPI GetModuleHandleW(LPCWSTR);
++__declspec(dllimport) BOOL WINAPI TerminateProcess(HANDLE, UINT);
++// Exported by the VC120 Store CRT (msvcr120_app.dll); the UCRT headers used
++// for compilation hide it from application builds.
++__declspec(dllimport) void __cdecl _tzset(void);
++__declspec(dllimport) LPVOID WINAPI VirtualAlloc(LPVOID, SIZE_T, DWORD, DWORD);
++__declspec(dllimport) BOOL WINAPI VirtualFree(LPVOID, SIZE_T, DWORD);
++__declspec(dllimport) BOOL WINAPI VirtualProtect(LPVOID, SIZE_T, DWORD,
++                                                 PDWORD);
++__declspec(dllimport) SIZE_T WINAPI VirtualQuery(LPCVOID,
++                                                 PMEMORY_BASIC_INFORMATION,
++                                                 SIZE_T);
++__declspec(dllimport) HANDLE WINAPI CreateFileMappingW(HANDLE,
++                                                       LPSECURITY_ATTRIBUTES,
++                                                       DWORD, DWORD, DWORD,
++                                                       LPCWSTR);
++__declspec(dllimport) LPVOID WINAPI MapViewOfFile(HANDLE, DWORD, DWORD, DWORD,
++                                                  SIZE_T);
++__declspec(dllimport) LPVOID WINAPI MapViewOfFileEx(HANDLE, DWORD, DWORD,
++                                                    DWORD, SIZE_T, LPVOID);
++__declspec(dllimport) BOOL WINAPI UnmapViewOfFile(LPCVOID);
++typedef VOID(CALLBACK* PTIMERAPCROUTINE)(LPVOID, DWORD, DWORD);
++__declspec(dllimport) HANDLE WINAPI CreateWaitableTimerExW(
++    LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD);
++__declspec(dllimport) BOOL WINAPI SetWaitableTimer(HANDLE,
++                                                   const LARGE_INTEGER*, LONG,
++                                                   PTIMERAPCROUTINE, LPVOID,
++                                                   BOOL);
++__declspec(dllimport) HANDLE WINAPI CreateFileW(LPCWSTR, DWORD, DWORD,
++                                                LPSECURITY_ATTRIBUTES, DWORD,
++                                                DWORD, HANDLE);
++__declspec(dllimport) DWORD WINAPI GetFileSize(HANDLE, LPDWORD);
++__declspec(dllimport) UINT WINAPI SetErrorMode(UINT);
++
++}  // extern "C"
++
++#ifndef GetModuleHandle
++#define GetModuleHandle GetModuleHandleW
++#endif
++#ifndef CreateFileMapping
++#define CreateFileMapping CreateFileMappingW
++#endif
++
++// Executable page protections (winnt.h hides them from application builds).
++// V8 lite/jitless mode never requests executable memory at run time.
++#ifndef PAGE_EXECUTE
++#define PAGE_EXECUTE 0x10
++#endif
++#ifndef PAGE_EXECUTE_READ
++#define PAGE_EXECUTE_READ 0x20
++#endif
++#ifndef PAGE_EXECUTE_READWRITE
++#define PAGE_EXECUTE_READWRITE 0x40
++#endif
++
++// Windows 10 memory-placeholder API types and flags. VirtualAlloc2 and
++// MapViewOfFile3 do not exist on Phone 8.1, so V8 finds them missing at run
++// time and never passes these values to the kernel.
++#ifndef MEM_RESERVE_PLACEHOLDER
++typedef struct MEM_EXTENDED_PARAMETER {
++  struct {
++    DWORD64 Type : 8;
++    DWORD64 Reserved : 56;
++  };
++  union {
++    DWORD64 ULong64;
++    PVOID Pointer;
++    SIZE_T Size;
++    HANDLE Handle;
++    DWORD ULong;
++  };
++} MEM_EXTENDED_PARAMETER, *PMEM_EXTENDED_PARAMETER;
++#define MEM_COALESCE_PLACEHOLDERS 0x00000001
++#define MEM_PRESERVE_PLACEHOLDER 0x00000002
++#define MEM_REPLACE_PLACEHOLDER 0x00004000
++#define MEM_RESERVE_PLACEHOLDER 0x00040000
++#endif
++#ifndef PAGE_TARGETS_INVALID
++#define PAGE_TARGETS_INVALID 0x40000000
++#endif
++
++// Windows 10 1803 flag: CreateWaitableTimerExW rejects it on Phone 8.1 and
++// V8 then falls back to its regular sleep.
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++#ifndef SEM_FAILCRITICALERRORS
++#define SEM_FAILCRITICALERRORS 0x0001
++#define SEM_NOGPFAULTERRORBOX 0x0002
++#define SEM_NOOPENFILEERRORBOX 0x8000
++#endif
++
++// VersionHelpers.h is desktop-only; the phone runs Windows Phone 8.1.
++inline bool IsWindows10OrGreater() { return false; }
++
++#endif  // WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++
++#endif  // V8_BASE_PLATFORM_WIN32_PHONE81_H_
+diff --git a/v8/src/base/sys-info.cc b/v8/src/base/sys-info.cc
+index 4bab916..1c9d569 100644
+--- a/v8/src/base/sys-info.cc
++++ b/v8/src/base/sys-info.cc
+@@ -24,6 +24,7 @@
+ #include "src/base/macros.h"
+ #if V8_OS_WIN
+ #include <windows.h>
++#include "src/base/platform/win32-phone81.h"
+ #endif
+ 
+ #if V8_OS_STARBOARD
 diff --git a/v8/src/codegen/arm/constants-arm.h b/v8/src/codegen/arm/constants-arm.h
 index 64446a0..11a1c96 100644
 --- a/v8/src/codegen/arm/constants-arm.h
@@ -22663,19 +23078,20 @@ index 64446a0..11a1c96 100644
  #endif
  
 diff --git a/v8/src/codegen/arm/cpu-arm.cc b/v8/src/codegen/arm/cpu-arm.cc
-index 6fc1dd9..007becb 100644
+index 6fc1dd9..dfd484b 100644
 --- a/v8/src/codegen/arm/cpu-arm.cc
 +++ b/v8/src/codegen/arm/cpu-arm.cc
-@@ -12,6 +12,8 @@
+@@ -12,6 +12,9 @@
  #include <sys/types.h>
  #elif V8_OS_STARBOARD
  #define __ARM_NR_cacheflush 0x0f0002
 +#elif defined(_WIN32)
 +#include <windows.h>  // for FlushInstructionCache().
++#include "src/base/platform/win32-phone81.h"
  #else
  #include <sys/syscall.h>  // for cache flushing.
  #endif
-@@ -34,6 +36,8 @@ V8_NOINLINE void CpuFeatures::FlushICache(void* start, size_t size) {
+@@ -34,6 +37,8 @@ V8_NOINLINE void CpuFeatures::FlushICache(void* start, size_t size) {
    struct arm_sync_icache_args args = {
        .addr = reinterpret_cast<uintptr_t>(start), .len = size};
    sysarch(ARM_SYNC_ICACHE, reinterpret_cast<void*>(&args));
@@ -22735,6 +23151,30 @@ index ccf0444..2ef9100 100644
 -#endif  // !defined(__APPLE__)
 +#endif  // !defined(__APPLE__) && !defined(_WIN32)
      );
+diff --git a/v8/src/libsampler/sampler.cc b/v8/src/libsampler/sampler.cc
+index 067c90b..81db04c 100644
+--- a/v8/src/libsampler/sampler.cc
++++ b/v8/src/libsampler/sampler.cc
+@@ -37,6 +37,7 @@
+ #elif V8_OS_WIN || V8_OS_CYGWIN
+ 
+ #include <windows.h>
++#include "src/base/platform/win32-phone81.h"
+ 
+ #elif V8_OS_FUCHSIA
+ 
+@@ -722,6 +723,11 @@ void Sampler::DoSample() {
+     state.pc = reinterpret_cast<void*>(context.Pc);
+     state.sp = reinterpret_cast<void*>(context.Sp);
+     state.fp = reinterpret_cast<void*>(context.Fp);
++#elif V8_HOST_ARCH_ARM
++    // Windows ARM32 (Thumb-2): r11 is the frame pointer.
++    state.pc = reinterpret_cast<void*>(context.Pc);
++    state.sp = reinterpret_cast<void*>(context.Sp);
++    state.fp = reinterpret_cast<void*>(context.R11);
+ #else
+     state.pc = reinterpret_cast<void*>(context.Eip);
+     state.sp = reinterpret_cast<void*>(context.Esp);
 diff --git a/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc b/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc
 index 08adc77..ac42aa9 100644
 --- a/v8/src/snapshot/embedded/platform-embedded-file-writer-win.cc

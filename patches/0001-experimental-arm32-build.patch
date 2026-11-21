@@ -6081,6 +6081,59 @@ index 0f38b2f..8f4fd96 100644
  dawn_jinja2_dir = "//third_party/jinja2"
  dawn_jsoncpp_dir = "//third_party/jsoncpp"
  dawn_perfetto_dir = "//third_party/perfetto"
+diff --git a/buildtools/third_party/libc++/BUILD.gn b/buildtools/third_party/libc++/BUILD.gn
+index e459bcb..7a2b077 100644
+--- a/buildtools/third_party/libc++/BUILD.gn
++++ b/buildtools/third_party/libc++/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/config/c++/c++.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
++import("//build/config/win/phone81.gni")
+ import("//build/toolchain/toolchain.gni")
+ import("//buildtools/third_party/libc++/modules.gni")
+ 
+@@ -524,8 +525,12 @@ target(libcxx_target_type, "libc++") {
+       "//third_party/libc++/src/src/support/win32/support.cpp",
+       "//third_party/libc++/src/src/support/win32/thread_win32.cpp",
+     ]
+-    configs -= [ "//build/config/win:winver" ]
+-    configs += [ ":winver" ]
++    if (!(current_os == "winuwp" && phone81_port)) {
++      # Phone 8.1 keeps the global _WIN32_WINNT=0x0603, which CreateFile2,
++      # FILE_ID_INFO and the other application-partition APIs require.
++      configs -= [ "//build/config/win:winver" ]
++      configs += [ ":winver" ]
++    }
+     if (libcxx_natvis_include) {
+       inputs += [
+         # libc++.natvis listed as an input here instead of in
+@@ -541,17 +546,23 @@ target(libcxx_target_type, "libc++") {
+   # exception and rtti.
+   configs -= [
+     "//build/config/compiler:chromium_code",
+-    "//build/config/compiler:no_exceptions",
+     "//build/config/compiler:no_rtti",
+     "//build/config/coverage:default_coverage",
+   ]
+   configs += [
+     ":config",
+     "//build/config/compiler:no_chromium_code",
+-    "//build/config/compiler:exceptions",
+     "//build/config/compiler:rtti",
+   ]
+ 
++  # LLVM cannot emit Windows C++ exception handling (WinEH) for ARM32, and
++  # Chromium code is built without exceptions anyway, so the Windows Phone
++  # 8.1 libc++ keeps -fno-exceptions (throwing paths abort).
++  if (!(current_os == "winuwp" && phone81_port)) {
++    configs -= [ "//build/config/compiler:no_exceptions" ]
++    configs += [ "//build/config/compiler:exceptions" ]
++  }
++
+   deps = [ "//third_party/llvm-libc:llvm-libc-shared" ]
+ 
+   if (use_clang_modules) {
 diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
 index 307358f..9c57080 100644
 --- a/chrome/test/BUILD.gn
@@ -16472,6 +16525,504 @@ index 43c9399..126fd24 100644
  #  if _LIBCPP_HAS_EXCEPTIONS
      try {
  #  endif // _LIBCPP_HAS_EXCEPTIONS
+diff --git a/third_party/libc++/src/src/atomic.cpp b/third_party/libc++/src/src/atomic.cpp
+index c05940f..640c86d 100644
+--- a/third_party/libc++/src/src/atomic.cpp
++++ b/third_party/libc++/src/src/atomic.cpp
+@@ -248,6 +248,17 @@ static void __platform_wake_by_address(void const* __ptr, bool __notify_one) {
+ #elif defined(_WIN32)
+ 
+ static void* win32_get_synch_api_function(const char* function_name) {
++#  if defined(WINUWP_8_1)
++  // Windows 8.1 apps link the Windows 8 synchronization API directly and
++  // cannot call GetModuleHandleW.
++  if (!strcmp(function_name, "WaitOnAddress"))
++    return reinterpret_cast<void*>(&::WaitOnAddress);
++  if (!strcmp(function_name, "WakeByAddressSingle"))
++    return reinterpret_cast<void*>(&::WakeByAddressSingle);
++  if (!strcmp(function_name, "WakeByAddressAll"))
++    return reinterpret_cast<void*>(&::WakeByAddressAll);
++  return nullptr;
++#  else
+   // Attempt to load the API set. Note that as per the Microsoft STL implementation, we assume this API is already
+   // loaded and accessible. While this isn't explicitly guaranteed by publicly available Win32 API documentation, it is
+   // true in practice, and may be guaranteed by internal documentation not released publicly. In any case the fact that
+@@ -269,6 +280,7 @@ static void* win32_get_synch_api_function(const char* function_name) {
+   // method is documented as being interchangeable with nullptr.
+   // https://devblogs.microsoft.com/oldnewthing/20180307-00/?p=98175
+   return reinterpret_cast<void*>(GetProcAddress(module_handle, function_name));
++#  endif
+ }
+ 
+ template <std::size_t _Size, class MaybeTimeout>
+diff --git a/third_party/libc++/src/src/chrono.cpp b/third_party/libc++/src/src/chrono.cpp
+index 30c1a1f..6bbaf74 100644
+--- a/third_party/libc++/src/src/chrono.cpp
++++ b/third_party/libc++/src/src/chrono.cpp
+@@ -107,7 +107,7 @@ static system_clock::time_point __libcpp_system_clock_now() {
+ 
+   FILETIME ft;
+ #  if (_WIN32_WINNT >= _WIN32_WINNT_WIN8 && WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)) ||                      \
+-      (_WIN32_WINNT >= _WIN32_WINNT_WIN10)
++      (defined(_WIN32_WINNT_WIN10) && _WIN32_WINNT >= _WIN32_WINNT_WIN10)
+   GetSystemTimePreciseAsFileTime(&ft);
+ #  elif !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+   GetSystemTimeAsFileTime(&ft);
+diff --git a/third_party/libc++/src/src/exception.cpp b/third_party/libc++/src/src/exception.cpp
+index 0c67e6a..7e6da4f 100644
+--- a/third_party/libc++/src/src/exception.cpp
++++ b/third_party/libc++/src/src/exception.cpp
+@@ -11,7 +11,11 @@
+ 
+ #include <__config>
+ 
+-#if defined(_LIBCPP_ABI_MICROSOFT)
++#if defined(_LIBCPP_ABI_MICROSOFT) && defined(WINUWP_8_1) && !_LIBCPP_HAS_EXCEPTIONS
++// Windows Phone 8.1 port: no exceptions anywhere (see the .ipp file).
++#  include "support/runtime/exception_msvc.ipp"
++#  include "support/runtime/exception_pointer_phone81.ipp"
++#elif defined(_LIBCPP_ABI_MICROSOFT)
+ #  include "support/runtime/exception_msvc.ipp"
+ #  include "support/runtime/exception_pointer_msvc.ipp"
+ #elif defined(LIBCXX_BUILDING_LIBCXXABI)
+diff --git a/third_party/libc++/src/src/filesystem/directory_iterator.cpp b/third_party/libc++/src/src/filesystem/directory_iterator.cpp
+index fd2bd50..efdd8ce 100644
+--- a/third_party/libc++/src/src/filesystem/directory_iterator.cpp
++++ b/third_party/libc++/src/src/filesystem/directory_iterator.cpp
+@@ -47,7 +47,13 @@ public:
+       ec = make_error_code(errc::no_such_file_or_directory);
+       return;
+     }
++#  if defined(WINUWP_8_1)
++    // FindFirstFileW is desktop-only; FindFirstFileExW is equivalent here.
++    __stream_ = ::FindFirstFileExW(
++        (root / "*").c_str(), FindExInfoStandard, &__data_, FindExSearchNameMatch, nullptr, 0);
++#  else
+     __stream_ = ::FindFirstFileW((root / "*").c_str(), &__data_);
++#  endif
+     if (__stream_ == INVALID_HANDLE_VALUE) {
+       ec                                  = detail::get_last_error();
+       const bool ignore_permission_denied = bool(opts & directory_options::skip_permission_denied);
+diff --git a/third_party/libc++/src/src/filesystem/operations.cpp b/third_party/libc++/src/src/filesystem/operations.cpp
+index 3ff62c1..e3e9e56 100644
+--- a/third_party/libc++/src/src/filesystem/operations.cpp
++++ b/third_party/libc++/src/src/filesystem/operations.cpp
+@@ -699,8 +699,22 @@ void __last_write_time(const path& p, file_time_type new_time, error_code* ec) {
+   if (!h)
+     return err.report(detail::get_last_error());
+   FILETIME last_write = timespec_to_filetime(ts);
++#  if defined(WINUWP_8_1)
++  // SetFileTime is desktop-only; FileBasicInfo is in the app partition.
++  FILE_BASIC_INFO basic;
++  if (!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)))
++    return err.report(detail::get_last_error());
++  basic.CreationTime.QuadPart   = 0;
++  basic.LastAccessTime.QuadPart = 0;
++  basic.ChangeTime.QuadPart     = 0;
++  basic.LastWriteTime.LowPart   = last_write.dwLowDateTime;
++  basic.LastWriteTime.HighPart  = static_cast<LONG>(last_write.dwHighDateTime);
++  if (!SetFileInformationByHandle(h, FileBasicInfo, &basic, sizeof(basic)))
++    return err.report(detail::get_last_error());
++#  else
+   if (!SetFileTime(h, nullptr, nullptr, &last_write))
+     return err.report(detail::get_last_error());
++#  endif
+ #else
+   error_code m_ec;
+   array<TimeSpec, 2> tbuf;
+@@ -1001,7 +1015,13 @@ path __temp_directory_path(error_code* ec) {
+ 
+ #ifdef _WIN32
+   wchar_t buf[MAX_PATH];
++#  if defined(WINUWP_8_1)
++  // Package apps have no %TEMP%; callers must use ApplicationData paths.
++  SetLastError(ERROR_NOT_SUPPORTED);
++  DWORD retval = 0;
++#  else
+   DWORD retval = GetTempPathW(MAX_PATH, buf);
++#  endif
+   if (!retval)
+     return err.report(detail::get_last_error());
+   if (retval > MAX_PATH)
+diff --git a/third_party/libc++/src/src/filesystem/path.cpp b/third_party/libc++/src/src/filesystem/path.cpp
+index 5790039..2ee32fa 100644
+--- a/third_party/libc++/src/src/filesystem/path.cpp
++++ b/third_party/libc++/src/src/filesystem/path.cpp
+@@ -424,7 +424,11 @@ size_t __wide_to_char(const wstring& str, char* out, size_t outlen) {
+   if (str.empty())
+     return 0;
+   ErrorHandler<size_t> err("__wide_to_char", nullptr);
++#  if defined(WINUWP_8_1)
++  UINT codepage     = CP_ACP; // Store/Phone file APIs are always ANSI.
++#  else
+   UINT codepage     = AreFileApisANSI() ? CP_ACP : CP_OEMCP;
++#  endif
+   BOOL used_default = FALSE;
+   int ret           = WideCharToMultiByte(codepage, 0, str.data(), str.size(), out, outlen, nullptr, &used_default);
+   if (ret <= 0 || used_default)
+@@ -436,7 +440,11 @@ size_t __char_to_wide(const string& str, wchar_t* out, size_t outlen) {
+   if (str.empty())
+     return 0;
+   ErrorHandler<size_t> err("__char_to_wide", nullptr);
++#  if defined(WINUWP_8_1)
++  UINT codepage = CP_ACP; // Store/Phone file APIs are always ANSI.
++#  else
+   UINT codepage = AreFileApisANSI() ? CP_ACP : CP_OEMCP;
++#  endif
+   int ret       = MultiByteToWideChar(codepage, MB_ERR_INVALID_CHARS, str.data(), str.size(), out, outlen);
+   if (ret <= 0)
+     return err.report(errc::illegal_byte_sequence);
+diff --git a/third_party/libc++/src/src/filesystem/posix_compat.h b/third_party/libc++/src/src/filesystem/posix_compat.h
+index f5119ae..4e00ae7 100644
+--- a/third_party/libc++/src/src/filesystem/posix_compat.h
++++ b/third_party/libc++/src/src/filesystem/posix_compat.h
+@@ -36,6 +36,15 @@
+ #  define NOMINMAX
+ #  include <io.h>
+ #  include <windows.h>
++
++// Windows Phone 8.1 apps only see the application partition of the Win32 API:
++// CreateFile2 instead of CreateFileW, no links, no current directory and no
++// final-path query.
++#  if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP)
++#    if WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#      define _LIBCPP_FILESYSTEM_WINDOWS_PHONE 1
++#    endif
++#  endif
+ #  include <winioctl.h>
+ #else
+ #  include <fcntl.h>
+@@ -126,6 +135,13 @@ namespace detail {
+ class WinHandle {
+ public:
+   WinHandle(const wchar_t* p, DWORD access, DWORD flags) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++    CREATEFILE2_EXTENDED_PARAMETERS params = {};
++    params.dwSize        = sizeof(params);
++    params.dwFileFlags   = FILE_FLAG_BACKUP_SEMANTICS | flags;
++    params.dwSecurityQosFlags = 0;
++    h = CreateFile2(p, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING, &params);
++#  else
+     h = CreateFileW(
+         p,
+         access,
+@@ -134,6 +150,7 @@ public:
+         OPEN_EXISTING,
+         FILE_FLAG_BACKUP_SEMANTICS | flags,
+         nullptr);
++#  endif
+   }
+   ~WinHandle() {
+     if (h != INVALID_HANDLE_VALUE)
+@@ -173,12 +190,22 @@ inline int stat_handle(HANDLE h, StatT* buf) {
+     return -1;
+   buf->st_nlink = standard.NumberOfLinks;
+   buf->st_size  = standard.EndOfFile.QuadPart;
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  // FILE_ID_INFO carries the volume serial number and a 128-bit file id.
++  FILE_ID_INFO id_info;
++  if (!GetFileInformationByHandleEx(h, FileIdInfo, &id_info, sizeof(id_info)))
++    return -1;
++  buf->st_dev = static_cast<decltype(buf->st_dev)>(id_info.VolumeSerialNumber);
++  static_assert(sizeof(buf->st_ino.id) <= sizeof(id_info.FileId.Identifier), "");
++  memcpy(&buf->st_ino.id[0], &id_info.FileId.Identifier[0], sizeof(buf->st_ino.id));
++#  else
+   BY_HANDLE_FILE_INFORMATION info;
+   if (!GetFileInformationByHandle(h, &info))
+     return -1;
+   buf->st_dev = info.dwVolumeSerialNumber;
+   memcpy(&buf->st_ino.id[0], &info.nFileIndexHigh, 4);
+   memcpy(&buf->st_ino.id[4], &info.nFileIndexLow, 4);
++#  endif
+   return 0;
+ }
+ 
+@@ -207,6 +234,13 @@ inline int mkdir(const wchar_t* path, int permissions) {
+ }
+ 
+ inline int symlink_file_dir(const wchar_t* oldname, const wchar_t* newname, bool is_dir) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  (void)oldname;
++  (void)newname;
++  (void)is_dir;
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return -1;
++#  else
+   path dest(oldname);
+   dest.make_preferred();
+   oldname     = dest.c_str();
+@@ -219,6 +253,7 @@ inline int symlink_file_dir(const wchar_t* oldname, const wchar_t* newname, bool
+   if (CreateSymbolicLinkW(newname, oldname, flags))
+     return 0;
+   return -1;
++#  endif
+ }
+ 
+ inline int symlink_file(const wchar_t* oldname, const wchar_t* newname) {
+@@ -230,9 +265,16 @@ inline int symlink_dir(const wchar_t* oldname, const wchar_t* newname) {
+ }
+ 
+ inline int link(const wchar_t* oldname, const wchar_t* newname) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  (void)oldname;
++  (void)newname;
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return -1;
++#  else
+   if (CreateHardLinkW(newname, oldname, nullptr))
+     return 0;
+   return -1;
++#  endif
+ }
+ 
+ inline int remove(const wchar_t* path) {
+@@ -275,9 +317,15 @@ inline int rename(const wchar_t* from, const wchar_t* to) {
+ }
+ 
+ inline int chdir(const wchar_t* path) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  (void)path;
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return -1;
++#  else
+   if (!SetCurrentDirectoryW(path))
+     return -1;
+   return 0;
++#  endif
+ }
+ 
+ struct StatVFS {
+@@ -317,6 +365,10 @@ inline wchar_t* getcwd([[maybe_unused]] wchar_t* in_buf, [[maybe_unused]] size_t
+   _LIBCPP_ASSERT_INTERNAL(in_buf == nullptr, "Windows getcwd() assumes in_buf==nullptr");
+   _LIBCPP_ASSERT_INTERNAL(in_size == 0, "Windows getcwd() assumes in_size==0");
+ 
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return nullptr;
++#  else
+   size_t buff_size = MAX_PATH + 10;
+   std::unique_ptr<wchar_t, decltype(&::free)> buff(static_cast<wchar_t*>(malloc(buff_size * sizeof(wchar_t))), &::free);
+   DWORD retval = GetCurrentDirectoryW(buff_size, buff.get());
+@@ -329,12 +381,19 @@ inline wchar_t* getcwd([[maybe_unused]] wchar_t* in_buf, [[maybe_unused]] size_t
+     return nullptr;
+   }
+   return buff.release();
++#  endif
+ }
+ 
+ inline wchar_t* realpath(const wchar_t* path, [[maybe_unused]] wchar_t* resolved_name) {
+   // Only expected to be used with us allocating the buffer.
+   _LIBCPP_ASSERT_INTERNAL(resolved_name == nullptr, "Windows realpath() assumes a null resolved_name");
+ 
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  // GetFinalPathNameByHandleW is desktop-only; canonical() reports failure.
++  (void)path;
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return nullptr;
++#  else
+   WinHandle h(path, FILE_READ_ATTRIBUTES, 0);
+   if (!h) {
+     return nullptr;
+@@ -360,6 +419,7 @@ inline wchar_t* realpath(const wchar_t* path, [[maybe_unused]] wchar_t* resolved
+     }
+   }
+   return buff.release();
++#  endif
+ }
+ 
+ #  define AT_FDCWD -1
+@@ -380,7 +440,14 @@ inline int fchmod_handle(HANDLE h, int perms) {
+ }
+ 
+ inline int fchmodat(int /*fd*/, const wchar_t* path, int perms, int flag) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  WIN32_FILE_ATTRIBUTE_DATA attribute_data;
++  DWORD attributes = GetFileAttributesExW(path, GetFileExInfoStandard, &attribute_data)
++                       ? attribute_data.dwFileAttributes
++                       : INVALID_FILE_ATTRIBUTES;
++#  else
+   DWORD attributes = GetFileAttributesW(path);
++#  endif
+   if (attributes == INVALID_FILE_ATTRIBUTES)
+     return -1;
+   if (attributes & FILE_ATTRIBUTE_REPARSE_POINT && !(flag & AT_SYMLINK_NOFOLLOW)) {
+@@ -414,6 +481,14 @@ inline int fchmod(int fd, int perms) {
+ using SSizeT = ::int64_t;
+ 
+ inline SSizeT readlink(const wchar_t* path, wchar_t* ret_buf, size_t bufsize) {
++#  if defined(_LIBCPP_FILESYSTEM_WINDOWS_PHONE)
++  // No DeviceIoControl for Phone apps, and app storage has no symlinks.
++  (void)path;
++  (void)ret_buf;
++  (void)bufsize;
++  SetLastError(ERROR_NOT_SUPPORTED);
++  return -1;
++#  else
+   uint8_t buf[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+   detail::WinHandle h(path, FILE_READ_ATTRIBUTES, FILE_FLAG_OPEN_REPARSE_POINT);
+   if (!h)
+@@ -451,6 +526,7 @@ inline SSizeT readlink(const wchar_t* path, wchar_t* ret_buf, size_t bufsize) {
+   }
+   memcpy(ret_buf, &symlink.PathBuffer[name_offset / sizeof(wchar_t)], name_length);
+   return name_length / sizeof(wchar_t);
++#  endif
+ }
+ 
+ #else
+diff --git a/third_party/libc++/src/src/support/runtime/exception_pointer_phone81.ipp b/third_party/libc++/src/src/support/runtime/exception_pointer_phone81.ipp
+new file mode 100644
+index 0000000..16df41f
+--- /dev/null
++++ b/third_party/libc++/src/src/support/runtime/exception_pointer_phone81.ipp
+@@ -0,0 +1,50 @@
++// -*- C++ -*-
++//===----------------------------------------------------------------------===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// exception_ptr for the Windows Phone 8.1 port of Chromium.
++//
++// LLVM cannot emit Windows C++ exception handling for ARM32, so that build
++// compiles libc++ and every other target without exceptions. No C++
++// exception can therefore be in flight or captured: every exception_ptr is
++// null, and rethrowing one terminates the process. exception_pointer_msvc.ipp
++// cannot be used here: it needs try/catch and vcruntime140 internals that the
++// VC120 Phone runtime does not have.
++
++#include <__verbose_abort>
++
++namespace std {
++
++exception_ptr::~exception_ptr() noexcept {}
++
++exception_ptr::exception_ptr(const exception_ptr& __other) noexcept : __ptr_(__other.__ptr_) {}
++
++exception_ptr& exception_ptr::operator=(const exception_ptr& __other) noexcept {
++  __ptr_ = __other.__ptr_;
++  return *this;
++}
++
++exception_ptr exception_ptr::__from_native_exception_pointer(void*) noexcept { return exception_ptr(); }
++
++exception_ptr __copy_exception_ptr(void*, const void*) { return exception_ptr(); }
++
++exception_ptr current_exception() noexcept { return exception_ptr(); }
++
++[[noreturn]] void rethrow_exception(exception_ptr) {
++  __libcpp_verbose_abort("rethrow_exception: C++ exceptions are disabled in the Windows Phone 8.1 build\n");
++}
++
++nested_exception::nested_exception() noexcept : __ptr_(current_exception()) {}
++
++nested_exception::~nested_exception() noexcept {}
++
++[[noreturn]] void nested_exception::rethrow_nested() const {
++  __libcpp_verbose_abort("rethrow_nested: C++ exceptions are disabled in the Windows Phone 8.1 build\n");
++}
++
++} // namespace std
+diff --git a/third_party/libc++/src/src/support/win32/locale_win32.cpp b/third_party/libc++/src/src/support/win32/locale_win32.cpp
+index c511756..cebff86 100644
+--- a/third_party/libc++/src/src/support/win32/locale_win32.cpp
++++ b/third_party/libc++/src/src/support/win32/locale_win32.cpp
+@@ -19,6 +19,12 @@
+ #include <string_view>
+ #include <windows.h>
+ 
++#if defined(WINUWP_8_1)
++// Exported by the Windows Phone 8.1 kernel (WindowsPhoneCore.lib) but hidden
++// by the application-partition headers.
++extern "C" __declspec(dllimport) UINT WINAPI GetACP(void);
++#endif
++
+ _LIBCPP_BEGIN_NAMESPACE_STD
+ _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
+ namespace __locale {
+@@ -276,7 +282,11 @@ const char* __get_locale_encoding(__locale_t loc) {
+   wchar_t locale_wbuffer[LOCALE_NAME_MAX_LENGTH + 1]{};
+   wchar_t number_buffer[11]{};
+ 
++#if defined(WINUWP_8_1)
++  bool is_ansi = true; // Store/Phone file APIs are always ANSI (no AreFileApisANSI).
++#else
+   bool is_ansi  = ::AreFileApisANSI();
++#endif
+   auto codepage = is_ansi ? CP_ACP : CP_OEMCP;
+   int ret       = ::MultiByteToWideChar(
+       codepage, MB_ERR_INVALID_CHARS, locale_name, __sv.size(), locale_wbuffer, LOCALE_NAME_MAX_LENGTH);
+diff --git a/third_party/libc++/src/src/support/win32/thread_win32.cpp b/third_party/libc++/src/src/support/win32/thread_win32.cpp
+index 606104e..792ed0f 100644
+--- a/third_party/libc++/src/src/support/win32/thread_win32.cpp
++++ b/third_party/libc++/src/src/support/win32/thread_win32.cpp
+@@ -41,7 +41,9 @@ static_assert(alignof(__libcpp_tls_key) == alignof(DWORD), "");
+ 
+ // Mutex
+ int __libcpp_recursive_mutex_init(__libcpp_recursive_mutex_t* __m) {
+-  InitializeCriticalSection((LPCRITICAL_SECTION)__m);
++  // InitializeCriticalSectionEx is also the only form available to
++  // Windows Phone 8.1 apps.
++  InitializeCriticalSectionEx((LPCRITICAL_SECTION)__m, 0, 0);
+   return 0;
+ }
+ 
+@@ -170,6 +172,13 @@ int __libcpp_thread_create(__libcpp_thread_t* __t, void* (*__func)(void*), void*
+ 
+ __libcpp_thread_id __libcpp_thread_get_current_id() { return GetCurrentThreadId(); }
+ 
++#if defined(WINUWP_8_1)
++// Exported by the Windows Phone 8.1 kernel (WindowsPhoneCore.lib) but hidden
++// by the application-partition headers.
++extern "C" __declspec(dllimport) DWORD WINAPI GetThreadId(HANDLE);
++extern "C" __declspec(dllimport) BOOL WINAPI SwitchToThread(void);
++#endif
++
+ __libcpp_thread_id __libcpp_thread_get_id(const __libcpp_thread_t* __t) { return GetThreadId(*__t); }
+ 
+ int __libcpp_thread_join(__libcpp_thread_t* __t) {
+diff --git a/third_party/libc++/src/src/system_error.cpp b/third_party/libc++/src/src/system_error.cpp
+index c6a38b5..d0a94a2 100644
+--- a/third_party/libc++/src/src/system_error.cpp
++++ b/third_party/libc++/src/src/system_error.cpp
+@@ -272,7 +272,17 @@ public:
+ const char* __system_error_category::name() const noexcept { return "system"; }
+ 
+ string __system_error_category::message(int ev) const {
+-#ifdef _WIN32
++#if defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++  // Windows Phone 8.1: no FORMAT_MESSAGE_ALLOCATE_BUFFER/LocalFree for apps.
++  char buffer[512];
++  unsigned long num_chars = ::FormatMessageA(
++      FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, ev, 0, buffer, sizeof(buffer), nullptr);
++  auto is_whitespace = [](char ch) { return ch == '\n' || ch == '\r' || ch == ' '; };
++  while (num_chars > 0 && is_whitespace(buffer[num_chars - 1]))
++    --num_chars;
++  return num_chars ? std::string(buffer, num_chars) : std::string("Unknown error");
++#elif defined(_WIN32)
+   std::string result;
+   char* str               = nullptr;
+   unsigned long num_chars = ::FormatMessageA(
+diff --git a/third_party/libc++/src/src/thread.cpp b/third_party/libc++/src/src/thread.cpp
+index 7b08908..5e38a51 100644
+--- a/third_party/libc++/src/src/thread.cpp
++++ b/third_party/libc++/src/src/thread.cpp
+@@ -74,6 +74,12 @@ unsigned thread::hardware_concurrency() noexcept {
+   if (result < 0)
+     return 0;
+   return static_cast<unsigned>(result);
++#elif defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++  // Windows Phone 8.1: one processor group, no GetActiveProcessorCount.
++  SYSTEM_INFO info;
++  GetNativeSystemInfo(&info);
++  return static_cast<unsigned>(info.dwNumberOfProcessors);
+ #elif defined(_WIN32)
+   return static_cast<unsigned>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+ #else // defined(CTL_HW) && defined(HW_NCPU)
 diff --git a/third_party/libjpeg_turbo/src/jinclude.h b/third_party/libjpeg_turbo/src/jinclude.h
 index 56e7a4b..cdd578d 100644
 --- a/third_party/libjpeg_turbo/src/jinclude.h

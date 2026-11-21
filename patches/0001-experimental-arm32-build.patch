@@ -5737,6 +5737,57 @@ index bf28cd9..fc5b7d3 100644
    OSInfo(const _OSVERSIONINFOEXW& version_info,
           const _SYSTEM_INFO& system_info,
           DWORD os_type);
+diff --git a/build/config/BUILD.gn b/build/config/BUILD.gn
+index d2b2454..197cd60 100644
+--- a/build/config/BUILD.gn
++++ b/build/config/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/c++/c++.gni")
+ import("//build/config/cast.gni")
+ import("//build/config/chrome_build.gni")
+@@ -151,7 +152,25 @@ config("release") {
+ 
+ # This config defines the default libraries applied to all targets.
+ config("default_libs") {
+-  if (is_win) {
++  if (current_os == "winuwp" && phone81_port) {
++    # Windows Phone 8.1: the system import library is WindowsPhoneCore.lib and
++    # the C runtime is VC120's msvcr120_app.dll. Default libraries named by
++    # the newer CRT headers (ucrt, vcruntime, msvcrt 14.x...) are ignored.
++    assert(phone81_vc120_store_lib_dir != "",
++           "Set phone81_vc120_store_lib_dir for the Phone 8.1 link.")
++    libs = [
++      "$phone81_vc120_store_lib_dir/msvcrt.lib",
++      "$phone81_vc120_store_lib_dir/oldnames.lib",
++      "WindowsPhoneCore.lib",
++      "runtimeobject.lib",
++      "uuid.lib",
++      "ws2_32.lib",
++    ]
++    ldflags = [ "/NODEFAULTLIB" ]
++    if (phone81_desktop_stub_lib_dir != "") {
++      ldflags += [ "/LIBPATH:$phone81_desktop_stub_lib_dir" ]
++    }
++  } else if (is_win) {
+     # TODO(brettw) this list of defaults should probably be smaller, and
+     # instead the targets that use the less common ones (e.g. wininet or
+     # winspool) should include those explicitly.
+@@ -288,6 +307,11 @@ group("common_deps") {
+     public_deps += [ "//buildtools/third_party/libc++" ]
+   }
+ 
++  if (current_os == "winuwp" && phone81_port) {
++    # Newer-CRT entry points on top of the VC120 Store CRT.
++    public_deps += [ "//build/win/phone81:crt_compat" ]
++  }
++
+   if (use_llvm_libatomic) {
+     # Certain C/C++ atomic operations require the separately built "libatomic"
+     # support library, which is not shipped with compiler-rt by default. See
 diff --git a/build/config/clang/BUILD.gn b/build/config/clang/BUILD.gn
 index f81d22c..99ea19b 100644
 --- a/build/config/clang/BUILD.gn
@@ -5768,7 +5819,7 @@ index d339de7..68f2e66 100644
      rust_abi_target = "x86_64-pc-windows-msvc"
    } else if (current_cpu == "x86") {
 diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
-index 1edf103..6e65f88 100644
+index 1edf103..c29b374 100644
 --- a/build/config/win/BUILD.gn
 +++ b/build/config/win/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/compiler/compiler.gni")
@@ -5935,12 +5986,36 @@ index 1edf103..6e65f88 100644
      # Turn on CFG bitmap generation and CFG load config.
      ldflags = [ "/guard:cf" ]
    }
+@@ -647,9 +704,22 @@ config("static_crt") {
+ # The number after the comma is the minimum required OS version.
+ # Set to 10.0 since we only support >= Win10 since M110.
+ subsystem_version_suffix = ",10.0"
++if (current_os == "winuwp" && phone81_port) {
++  # Windows Phone 8.1 runs the NT 6.3 kernel.
++  subsystem_version_suffix = ",6.03"
++}
+ 
+ config("console") {
+-  ldflags = [ "/SUBSYSTEM:CONSOLE$subsystem_version_suffix" ]
++  if (current_os == "winuwp" && phone81_port) {
++    # Phone 8.1 has no console subsystem; every image is an AppContainer
++    # Windows image.
++    ldflags = [
++      "/SUBSYSTEM:WINDOWS$subsystem_version_suffix",
++      "/APPCONTAINER",
++    ]
++  } else {
++    ldflags = [ "/SUBSYSTEM:CONSOLE$subsystem_version_suffix" ]
++  }
+ }
+ 
+ config("windowed") {
 diff --git a/build/config/win/phone81.gni b/build/config/win/phone81.gni
 new file mode 100644
-index 0000000..1a24019
+index 0000000..d181680
 --- /dev/null
 +++ b/build/config/win/phone81.gni
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,25 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -5954,6 +6029,17 @@ index 0000000..1a24019
 +  # Absolute path of a Windows 10/11 SDK "Include/<version>" directory (with
 +  # um/ and shared/). Only used by phone81_desktop_declarations below.
 +  phone81_desktop_sdk_include = ""
++
++  # Absolute path of the Visual C++ 2013 (VC120) "VC/lib/store/arm" directory.
++  # Phone 8.1 executables and DLLs link its msvcrt.lib (msvcr120_app.dll),
++  # matching the Microsoft.VCLibs.120.00.Phone framework package.
++  phone81_vc120_store_lib_dir = ""
++
++  # Optional directory searched last at link time. It can hold empty archives
++  # named after desktop import libraries (user32.lib, setupapi.lib...) that
++  # some targets request; their symbols then show up as unresolved instead of
++  # the link failing on a missing file.
++  phone81_desktop_stub_lib_dir = ""
 +}
 diff --git a/build/config/win/phone81_desktop_compat.h b/build/config/win/phone81_desktop_compat.h
 new file mode 100644
@@ -6272,6 +6358,890 @@ index 869b764..4cade0a 100755
          print(
              'Windows SDK >= 10.0.22621.2428 required. You can get it by updating '
              f'Visual Studio {version_as_year} using the Visual Studio Installer.',
+diff --git a/build/win/phone81/BUILD.gn b/build/win/phone81/BUILD.gn
+new file mode 100644
+index 0000000..b8bfc2c
+--- /dev/null
++++ b/build/win/phone81/BUILD.gn
+@@ -0,0 +1,31 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++import("//build/config/win/phone81.gni")
++
++assert(current_os == "winuwp" && phone81_port)
++
++# Windows Phone 8.1 links the Visual C++ 2013 Store CRT (msvcr120_app.dll),
++# while the code is compiled with newer CRT headers. This library defines,
++# on top of VC120 exports and Phone SDK primitives, the symbols that only the
++# newer CRT provides (stdio entry points, thread-safe statics, aligned and
++# sized operator new/delete, exception and type_info helpers...).
++#
++# The sources do not include CRT headers: they declare the few VC120 and
++# Win32 functions they use, so that defining these symbols does not clash
++# with the newer headers' dllimport declarations.
++static_library("crt_compat") {
++  # Linked into every Phone executable and DLL through
++  # //build/config:common_deps; it has no dependencies of its own.
++  sources = [
++    "crt_compat_new_aligned.cc",
++    "crt_compat_new_sized.cc",
++    "crt_compat_runtime.cc",
++    "crt_compat_stdio.cc",
++    "crt_compat_thread_statics.cc",
++    "vc120_crt.h",
++  ]
++  configs -= [ "//build/config/compiler:chromium_code" ]
++  configs += [ "//build/config/compiler:no_chromium_code" ]
++}
+diff --git a/build/win/phone81/crt_compat_new_aligned.cc b/build/win/phone81/crt_compat_new_aligned.cc
+new file mode 100644
+index 0000000..2aebd43
+--- /dev/null
++++ b/build/win/phone81/crt_compat_new_aligned.cc
+@@ -0,0 +1,79 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// C++17 over-aligned allocation, absent from VC120's CRT, implemented with
++// _aligned_malloc/_aligned_free. Exceptions are disabled on this target, so
++// a failed throwing allocation aborts.
++
++#include "build/win/phone81/vc120_crt.h"
++
++namespace std {
++enum class align_val_t : size_t;
++struct nothrow_t;
++}  // namespace std
++
++namespace {
++
++void* Allocate(size_t size, std::align_val_t alignment) {
++  void* p = _aligned_malloc(size ? size : 1, static_cast<size_t>(alignment));
++  return p;
++}
++
++void* AllocateOrAbort(size_t size, std::align_val_t alignment) {
++  void* p = Allocate(size, alignment);
++  if (!p) {
++    abort();
++  }
++  return p;
++}
++
++}  // namespace
++
++void* operator new(size_t size, std::align_val_t alignment) {
++  return AllocateOrAbort(size, alignment);
++}
++
++void* operator new[](size_t size, std::align_val_t alignment) {
++  return AllocateOrAbort(size, alignment);
++}
++
++void* operator new(size_t size,
++                   std::align_val_t alignment,
++                   const std::nothrow_t&) noexcept {
++  return Allocate(size, alignment);
++}
++
++void* operator new[](size_t size,
++                     std::align_val_t alignment,
++                     const std::nothrow_t&) noexcept {
++  return Allocate(size, alignment);
++}
++
++void operator delete(void* p, std::align_val_t) noexcept {
++  _aligned_free(p);
++}
++
++void operator delete[](void* p, std::align_val_t) noexcept {
++  _aligned_free(p);
++}
++
++void operator delete(void* p, size_t, std::align_val_t) noexcept {
++  _aligned_free(p);
++}
++
++void operator delete[](void* p, size_t, std::align_val_t) noexcept {
++  _aligned_free(p);
++}
++
++void operator delete(void* p,
++                     std::align_val_t,
++                     const std::nothrow_t&) noexcept {
++  _aligned_free(p);
++}
++
++void operator delete[](void* p,
++                       std::align_val_t,
++                       const std::nothrow_t&) noexcept {
++  _aligned_free(p);
++}
+diff --git a/build/win/phone81/crt_compat_new_sized.cc b/build/win/phone81/crt_compat_new_sized.cc
+new file mode 100644
+index 0000000..e5998d9
+--- /dev/null
++++ b/build/win/phone81/crt_compat_new_sized.cc
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// C++14 sized deallocation, absent from VC120's CRT: forward to the unsized
++// operators that msvcr120_app.dll exports.
++
++#include "build/win/phone81/vc120_crt.h"
++
++void operator delete(void* p, size_t) noexcept {
++  ::operator delete(p);
++}
++
++void operator delete[](void* p, size_t) noexcept {
++  ::operator delete[](p);
++}
+diff --git a/build/win/phone81/crt_compat_runtime.cc b/build/win/phone81/crt_compat_runtime.cc
+new file mode 100644
+index 0000000..7d6962c
+--- /dev/null
++++ b/build/win/phone81/crt_compat_runtime.cc
+@@ -0,0 +1,204 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// C++ runtime and low-level CRT entry points that the newer vcruntime/UCRT
++// headers reference but msvcr120_app.dll does not export, implemented on
++// VC120 exports and Windows Phone 8.1 primitives.
++
++#include "build/win/phone81/vc120_crt.h"
++
++namespace {
++
++size_t StringLength(const char* s) {
++  size_t n = 0;
++  while (s[n]) {
++    ++n;
++  }
++  return n;
++}
++
++}  // namespace
++
++extern "C" {
++
++// std::exception storage (vcruntime_exception.h).
++struct __std_exception_data {
++  const char* _What;
++  bool _DoFree;
++};
++
++void __cdecl __std_exception_copy(const __std_exception_data* from,
++                                  __std_exception_data* to) {
++  if (!from->_DoFree || !from->_What) {
++    to->_What = from->_What;
++    to->_DoFree = false;
++    return;
++  }
++  size_t size = StringLength(from->_What) + 1;
++  char* copy = static_cast<char*>(malloc(size));
++  if (!copy) {
++    return;
++  }
++  for (size_t i = 0; i < size; ++i) {
++    copy[i] = from->_What[i];
++  }
++  to->_What = copy;
++  to->_DoFree = true;
++}
++
++void __cdecl __std_exception_destroy(__std_exception_data* data) {
++  if (data->_DoFree) {
++    free(const_cast<char*>(data->_What));
++  }
++  data->_What = nullptr;
++  data->_DoFree = false;
++}
++
++// std::type_info support (vcruntime_typeinfo.h).
++struct __std_type_info_data {
++  const char* _UndecoratedName;
++  const char _DecoratedName[1];
++};
++
++int __cdecl __std_type_info_compare(const __std_type_info_data* left,
++                                    const __std_type_info_data* right) {
++  if (left == right) {
++    return 0;
++  }
++  const char* a = left->_DecoratedName + 1;
++  const char* b = right->_DecoratedName + 1;
++  while (*a && *a == *b) {
++    ++a;
++    ++b;
++  }
++  return static_cast<unsigned char>(*a) - static_cast<unsigned char>(*b);
++}
++
++size_t __cdecl __std_type_info_hash(const __std_type_info_data* data) {
++  // 32-bit FNV-1a, as in the newer vcruntime.
++  size_t hash = 2166136261u;
++  for (const char* p = data->_DecoratedName + 1; *p; ++p) {
++    hash ^= static_cast<unsigned char>(*p);
++    hash *= 16777619u;
++  }
++  return hash;
++}
++
++const char* __cdecl __std_type_info_name(__std_type_info_data* data, void*) {
++  const char* cached =
++      __atomic_load_n(&data->_UndecoratedName, __ATOMIC_ACQUIRE);
++  if (cached) {
++    return cached;
++  }
++  // UNDNAME_32_BIT_DECODE | UNDNAME_TYPE_ONLY
++  char* name = __unDName(nullptr, data->_DecoratedName + 1, 0, malloc, free,
++                         0x2800);
++  if (!name) {
++    return nullptr;
++  }
++  size_t length = StringLength(name);
++  while (length && name[length - 1] == ' ') {
++    name[--length] = 0;
++  }
++  const char* expected = nullptr;
++  if (!__atomic_compare_exchange_n(&data->_UndecoratedName, &expected, name,
++                                   false, __ATOMIC_ACQ_REL,
++                                   __ATOMIC_ACQUIRE)) {
++    free(name);
++    return expected;
++  }
++  return name;
++}
++
++void __cdecl __std_type_info_destroy_list(void*) {}
++
++// std::uncaught_exceptions(). Exceptions are disabled on this target
++// (LLVM has no ARM32 WinEH), so VC120's predicate is exact.
++int __cdecl __uncaught_exceptions(void) {
++  return vc120_uncaught_exception() ? 1 : 0;
++}
++
++phone81_terminate_handler __cdecl set_terminate(phone81_terminate_handler h) {
++  return vc120_set_terminate(h);
++}
++
++phone81_terminate_handler __cdecl set_unexpected(
++    phone81_terminate_handler h) {
++  return vc120_set_unexpected(h);
++}
++
++phone81_new_handler __cdecl _set_new_handler(phone81_new_handler h) {
++  return vc120_set_new_handler(h);
++}
++
++int __cdecl _set_new_mode(int mode) {
++  return vc120_set_new_mode(mode);
++}
++
++// Threads. msvcr120_app.dll has no _beginthreadex; its per-thread data is
++// created on first use and released on DLL_THREAD_DETACH, so CreateThread
++// is equivalent here. On ARM, __stdcall and __cdecl are the same convention.
++uintptr_t __cdecl _beginthreadex(void* security,
++                                 unsigned stack_size,
++                                 unsigned(__stdcall* start)(void*),
++                                 void* argument,
++                                 unsigned flags,
++                                 unsigned* thread_id) {
++  void* thread = CreateThread(
++      security, stack_size,
++      reinterpret_cast<unsigned long(__stdcall*)(void*)>(start), argument,
++      flags, reinterpret_cast<unsigned long*>(thread_id));
++  if (!thread) {
++    *_errno() = 11;  // EAGAIN
++  }
++  return reinterpret_cast<uintptr_t>(thread);
++}
++
++void __cdecl _endthreadex(unsigned code) {
++  ExitThread(code);
++}
++
++// Low-level IO.
++int __cdecl _sopen_dispatch(const char* path,
++                            int oflag,
++                            int shflag,
++                            int pmode,
++                            int* fd,
++                            int) {
++  return _sopen_s(fd, path, oflag, shflag, pmode);
++}
++
++int __cdecl _wsopen_dispatch(const wchar_t* path,
++                             int oflag,
++                             int shflag,
++                             int pmode,
++                             int* fd,
++                             int) {
++  return _wsopen_s(fd, path, oflag, shflag, pmode);
++}
++
++// Phone 8.1 apps have no per-process current directory to change.
++int __cdecl _wchdir(const wchar_t*) {
++  *_errno() = 2;  // ENOENT
++  return -1;
++}
++
++}  // extern "C"
++
++PHONE81_DEFINE_IMPORT(__std_exception_copy)
++PHONE81_DEFINE_IMPORT(__std_exception_destroy)
++PHONE81_DEFINE_IMPORT(__std_type_info_compare)
++PHONE81_DEFINE_IMPORT(__std_type_info_hash)
++PHONE81_DEFINE_IMPORT(__std_type_info_name)
++PHONE81_DEFINE_IMPORT(__std_type_info_destroy_list)
++PHONE81_DEFINE_IMPORT(__uncaught_exceptions)
++PHONE81_DEFINE_IMPORT(set_terminate)
++PHONE81_DEFINE_IMPORT(set_unexpected)
++PHONE81_DEFINE_IMPORT(_set_new_handler)
++PHONE81_DEFINE_IMPORT(_set_new_mode)
++PHONE81_DEFINE_IMPORT(_beginthreadex)
++PHONE81_DEFINE_IMPORT(_endthreadex)
++PHONE81_DEFINE_IMPORT(_sopen_dispatch)
++PHONE81_DEFINE_IMPORT(_wsopen_dispatch)
++PHONE81_DEFINE_IMPORT(_wchdir)
+diff --git a/build/win/phone81/crt_compat_stdio.cc b/build/win/phone81/crt_compat_stdio.cc
+new file mode 100644
+index 0000000..07db62c
+--- /dev/null
++++ b/build/win/phone81/crt_compat_stdio.cc
+@@ -0,0 +1,318 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// The newer CRT headers implement printf/scanf inline on top of
++// __stdio_common_* entry points that msvcr120_app.dll lacks. These versions
++// forward to the VC120 functions, translating the C99 length modifiers that
++// VC120 does not parse (z, t, j and, for printf, hh).
++
++#include "build/win/phone81/vc120_crt.h"
++
++namespace {
++
++// Option bits of the newer CRT (corecrt_stdio_config.h).
++constexpr uint64_t kPrintfLegacyVsprintfNullTermination = 1;
++constexpr uint64_t kPrintfStandardSnprintfBehavior = 2;
++constexpr uint64_t kScanfSecureCrt = 1;
++
++// Translated formats up to this many characters use a stack buffer.
++constexpr size_t kStackFormat = 256;
++
++template <typename Char>
++size_t Length(const Char* s) {
++  size_t n = 0;
++  while (s[n]) {
++    ++n;
++  }
++  return n;
++}
++
++// Rewrites |format| for the VC120 parser. Each conversion grows by at most
++// two characters ("j" -> "I64"), so 3 * length + 1 always suffices.
++template <typename Char>
++void TranslateFormat(const Char* format, Char* out, bool for_scanf) {
++  while (*format) {
++    Char c = *format++;
++    *out++ = c;
++    if (c != '%') {
++      continue;
++    }
++    if (*format == '%') {
++      *out++ = *format++;
++      continue;
++    }
++    // Flags, width and precision (scanf: assignment suppression, width).
++    while (*format && (*format == '-' || *format == '+' || *format == ' ' ||
++                       *format == '#' || *format == '0' || *format == '\'' ||
++                       *format == '*' || *format == '.' ||
++                       (*format >= '1' && *format <= '9'))) {
++      *out++ = *format++;
++    }
++    // Length modifiers.
++    if (*format == 'z' || *format == 't') {
++      *out++ = 'I';
++      ++format;
++    } else if (*format == 'j') {
++      *out++ = 'I';
++      *out++ = '6';
++      *out++ = '4';
++      ++format;
++    } else if (!for_scanf && format[0] == 'h' && format[1] == 'h') {
++      // printf promotes char arguments to int; VC120 prints them as short.
++      *out++ = 'h';
++      format += 2;
++    }
++  }
++  *out = 0;
++}
++
++// Owns the translated copy of a format string.
++template <typename Char>
++class Format {
++ public:
++  Format(const Char* format, bool for_scanf) {
++    size_t needed = 3 * Length(format) + 1;
++    text_ = needed <= kStackFormat
++                ? stack_
++                : static_cast<Char*>(malloc(needed * sizeof(Char)));
++    if (!text_) {
++      abort();
++    }
++    TranslateFormat(format, text_, for_scanf);
++  }
++  ~Format() {
++    if (text_ != stack_) {
++      free(text_);
++    }
++  }
++  Format(const Format&) = delete;
++  Format& operator=(const Format&) = delete;
++
++  const Char* get() const { return text_; }
++
++ private:
++  Char stack_[kStackFormat];
++  Char* text_;
++};
++
++int Count(const char* format, va_list args) {
++  return _vscprintf(format, args);
++}
++int Count(const wchar_t* format, va_list args) {
++  return _vscwprintf(format, args);
++}
++int Print(char* buffer, size_t count, const char* format, va_list args) {
++  return _vsnprintf(buffer, count, format, args);
++}
++int Print(wchar_t* buffer, size_t count, const wchar_t* format, va_list args) {
++  return _vsnwprintf(buffer, count, format, args);
++}
++
++// vsnprintf/vswprintf semantics of the newer CRT (__stdio_common_vs*printf).
++template <typename Char>
++int CommonVsprintf(uint64_t options,
++                   Char* buffer,
++                   size_t count,
++                   const Char* format,
++                   va_list args) {
++  Format<Char> fmt(format, /*for_scanf=*/false);
++  va_list count_args;
++  va_copy(count_args, args);
++  int needed = Count(fmt.get(), count_args);
++  va_end(count_args);
++  if (needed < 0) {
++    if (buffer && count) {
++      buffer[0] = 0;
++    }
++    return -1;
++  }
++  if (buffer && count) {
++    Print(buffer, count, fmt.get(), args);
++    size_t written = static_cast<size_t>(needed);
++    if (written < count) {
++      buffer[written] = 0;
++    } else if (!(options & kPrintfLegacyVsprintfNullTermination)) {
++      buffer[count - 1] = 0;
++    }
++  }
++  if (options & kPrintfStandardSnprintfBehavior) {
++    return needed;
++  }
++  // Legacy _vsnprintf behaviour: -1 when the output did not fit.
++  if (buffer && static_cast<size_t>(needed) >= count) {
++    return -1;
++  }
++  return needed;
++}
++
++// vsprintf_s semantics: the output must fit, otherwise the buffer is emptied.
++template <typename Char>
++int CommonVsprintfS(Char* buffer,
++                    size_t count,
++                    const Char* format,
++                    va_list args) {
++  Format<Char> fmt(format, /*for_scanf=*/false);
++  va_list count_args;
++  va_copy(count_args, args);
++  int needed = Count(fmt.get(), count_args);
++  va_end(count_args);
++  if (!buffer || count == 0) {
++    return -1;
++  }
++  if (needed < 0 || static_cast<size_t>(needed) >= count) {
++    buffer[0] = 0;
++    *_errno() = 34;  // ERANGE
++    return -1;
++  }
++  Print(buffer, count, fmt.get(), args);
++  buffer[needed] = 0;
++  return needed;
++}
++
++// Scanf over a bounded buffer: VC120 only reads NUL-terminated input.
++template <typename Char, typename Scan>
++int CommonVsscanf(const Char* buffer,
++                  size_t count,
++                  const Char* format,
++                  va_list args,
++                  Scan scan) {
++  Format<Char> fmt(format, /*for_scanf=*/true);
++  if (count == static_cast<size_t>(-1)) {
++    return scan(buffer, fmt.get(), args);
++  }
++  size_t n = 0;
++  while (n < count && buffer[n]) {
++    ++n;
++  }
++  Char* copy = static_cast<Char*>(malloc((n + 1) * sizeof(Char)));
++  if (!copy) {
++    return -1;
++  }
++  for (size_t i = 0; i < n; ++i) {
++    copy[i] = buffer[i];
++  }
++  copy[n] = 0;
++  int result = scan(copy, fmt.get(), args);
++  free(copy);
++  return result;
++}
++
++}  // namespace
++
++extern "C" {
++
++struct _iobuf* __cdecl __acrt_iob_func(unsigned index) {
++  // VC120's struct _iobuf is eight 32-bit fields.
++  return reinterpret_cast<struct _iobuf*>(static_cast<char*>(__iob_func()) +
++                                          index * 32);
++}
++
++int __cdecl __stdio_common_vfprintf(uint64_t,
++                                    struct _iobuf* stream,
++                                    const char* format,
++                                    void*,
++                                    va_list args) {
++  Format<char> fmt(format, /*for_scanf=*/false);
++  return vfprintf(stream, fmt.get(), args);
++}
++
++int __cdecl __stdio_common_vfwprintf(uint64_t,
++                                     struct _iobuf* stream,
++                                     const wchar_t* format,
++                                     void*,
++                                     va_list args) {
++  Format<wchar_t> fmt(format, /*for_scanf=*/false);
++  return vfwprintf(stream, fmt.get(), args);
++}
++
++int __cdecl __stdio_common_vsprintf(uint64_t options,
++                                    char* buffer,
++                                    size_t count,
++                                    const char* format,
++                                    void*,
++                                    va_list args) {
++  return CommonVsprintf(options, buffer, count, format, args);
++}
++
++int __cdecl __stdio_common_vswprintf(uint64_t options,
++                                     wchar_t* buffer,
++                                     size_t count,
++                                     const wchar_t* format,
++                                     void*,
++                                     va_list args) {
++  return CommonVsprintf(options, buffer, count, format, args);
++}
++
++int __cdecl __stdio_common_vsprintf_s(uint64_t,
++                                      char* buffer,
++                                      size_t count,
++                                      const char* format,
++                                      void*,
++                                      va_list args) {
++  return CommonVsprintfS(buffer, count, format, args);
++}
++
++int __cdecl __stdio_common_vswprintf_s(uint64_t,
++                                       wchar_t* buffer,
++                                       size_t count,
++                                       const wchar_t* format,
++                                       void*,
++                                       va_list args) {
++  return CommonVsprintfS(buffer, count, format, args);
++}
++
++int __cdecl __stdio_common_vsnprintf_s(uint64_t,
++                                       char* buffer,
++                                       size_t size,
++                                       size_t max_count,
++                                       const char* format,
++                                       void*,
++                                       va_list args) {
++  Format<char> fmt(format, /*for_scanf=*/false);
++  return _vsnprintf_s(buffer, size, max_count, fmt.get(), args);
++}
++
++int __cdecl __stdio_common_vsnwprintf_s(uint64_t,
++                                        wchar_t* buffer,
++                                        size_t size,
++                                        size_t max_count,
++                                        const wchar_t* format,
++                                        void*,
++                                        va_list args) {
++  Format<wchar_t> fmt(format, /*for_scanf=*/false);
++  return _vsnwprintf_s(buffer, size, max_count, fmt.get(), args);
++}
++
++int __cdecl __stdio_common_vsscanf(uint64_t options,
++                                   const char* buffer,
++                                   size_t count,
++                                   const char* format,
++                                   void*,
++                                   va_list args) {
++  return CommonVsscanf(buffer, count, format, args,
++                       (options & kScanfSecureCrt) ? vsscanf_s : vsscanf);
++}
++
++int __cdecl __stdio_common_vswscanf(uint64_t,
++                                    const wchar_t* buffer,
++                                    size_t count,
++                                    const wchar_t* format,
++                                    void*,
++                                    va_list args) {
++  return CommonVsscanf(buffer, count, format, args, vswscanf);
++}
++
++}  // extern "C"
++
++PHONE81_DEFINE_IMPORT(__acrt_iob_func)
++PHONE81_DEFINE_IMPORT(__stdio_common_vfprintf)
++PHONE81_DEFINE_IMPORT(__stdio_common_vfwprintf)
++PHONE81_DEFINE_IMPORT(__stdio_common_vsprintf)
++PHONE81_DEFINE_IMPORT(__stdio_common_vswprintf)
++PHONE81_DEFINE_IMPORT(__stdio_common_vsprintf_s)
++PHONE81_DEFINE_IMPORT(__stdio_common_vswprintf_s)
++PHONE81_DEFINE_IMPORT(__stdio_common_vsnprintf_s)
++PHONE81_DEFINE_IMPORT(__stdio_common_vsnwprintf_s)
++PHONE81_DEFINE_IMPORT(__stdio_common_vsscanf)
++PHONE81_DEFINE_IMPORT(__stdio_common_vswscanf)
+diff --git a/build/win/phone81/crt_compat_thread_statics.cc b/build/win/phone81/crt_compat_thread_statics.cc
+new file mode 100644
+index 0000000..98709bb
+--- /dev/null
++++ b/build/win/phone81/crt_compat_thread_statics.cc
+@@ -0,0 +1,74 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Thread-safe initialization of function-local statics ("magic statics"),
++// which the newer compilers implement with these CRT entry points. VC120's
++// CRT predates them. The protocol matches the MSVC ABI: a guard of 0 means
++// uninitialized, -1 means being initialized, and a completed guard holds the
++// global epoch at completion, compared against a per-thread epoch.
++
++#include "build/win/phone81/vc120_crt.h"
++
++namespace {
++
++constexpr int kUninitialized = 0;
++constexpr int kBeingInitialized = -1;
++constexpr int kEpochStart = -2147483647 - 1;
++
++PHONE81_SRWLOCK g_lock = {nullptr};
++PHONE81_CONDITION_VARIABLE g_condition = {nullptr};
++
++}  // namespace
++
++extern "C" {
++
++int _Init_global_epoch = kEpochStart;
++__declspec(thread) int _Init_thread_epoch = kEpochStart;
++
++void __cdecl _Init_thread_header(int* once) {
++  AcquireSRWLockExclusive(&g_lock);
++  if (*once == kUninitialized) {
++    *once = kBeingInitialized;
++  } else {
++    while (*once == kBeingInitialized) {
++      SleepConditionVariableSRW(&g_condition, &g_lock, 100, 0);
++      if (*once == kUninitialized) {
++        // The initializing thread aborted (its initializer did not finish).
++        *once = kBeingInitialized;
++        ReleaseSRWLockExclusive(&g_lock);
++        return;
++      }
++    }
++    _Init_thread_epoch = _Init_global_epoch;
++  }
++  ReleaseSRWLockExclusive(&g_lock);
++}
++
++void __cdecl _Init_thread_abort(int* once) {
++  AcquireSRWLockExclusive(&g_lock);
++  *once = kUninitialized;
++  ReleaseSRWLockExclusive(&g_lock);
++  WakeAllConditionVariable(&g_condition);
++}
++
++void __cdecl _Init_thread_footer(int* once) {
++  AcquireSRWLockExclusive(&g_lock);
++  ++_Init_global_epoch;
++  *once = _Init_global_epoch;
++  _Init_thread_epoch = _Init_global_epoch;
++  ReleaseSRWLockExclusive(&g_lock);
++  WakeAllConditionVariable(&g_condition);
++}
++
++// Dynamic thread_local initialization. VC120's CRT already runs the
++// .CRT$XD* initializers eagerly for every thread from its TLS callback
++// (__dyn_tls_init), so the on-demand path of the newer CRT has nothing left
++// to do; the guard starts set so that compiled code skips the call.
++__declspec(thread) bool __tls_guard = true;
++
++void __cdecl __dyn_tls_on_demand_init(void) {
++  __tls_guard = true;
++}
++
++}  // extern "C"
+diff --git a/build/win/phone81/vc120_crt.h b/build/win/phone81/vc120_crt.h
+new file mode 100644
+index 0000000..bf508d5
+--- /dev/null
++++ b/build/win/phone81/vc120_crt.h
+@@ -0,0 +1,120 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Declarations of the Visual C++ 2013 Store CRT (msvcr120_app.dll) and
++// Windows Phone 8.1 functions used by the CRT compatibility library. Only
++// compiler-provided headers are included on purpose; see BUILD.gn.
++
++#ifndef BUILD_WIN_PHONE81_VC120_CRT_H_
++#define BUILD_WIN_PHONE81_VC120_CRT_H_
++
++#include <stdarg.h>
++#include <stddef.h>
++#include <stdint.h>
++
++// Defines a pointer named __imp_<name> to <name>, for callers compiled with
++// the newer headers' __declspec(dllimport) declarations.
++#define PHONE81_DEFINE_IMPORT(name) \
++  extern "C" __attribute__((used)) void* const __imp_##name = (void*)&(name);
++
++extern "C" {
++
++// VC120 stdio. FILE is opaque here: VC120's struct _iobuf is 32 bytes on
++// 32-bit ARM, and only VC120 functions ever dereference it.
++struct _iobuf;
++void* __cdecl __iob_func(void);
++int __cdecl vfprintf(struct _iobuf* stream, const char* format, va_list args);
++int __cdecl vfwprintf(struct _iobuf* stream,
++                      const wchar_t* format,
++                      va_list args);
++int __cdecl _vscprintf(const char* format, va_list args);
++int __cdecl _vscwprintf(const wchar_t* format, va_list args);
++int __cdecl _vsnprintf(char* buffer,
++                       size_t count,
++                       const char* format,
++                       va_list args);
++int __cdecl _vsnwprintf(wchar_t* buffer,
++                        size_t count,
++                        const wchar_t* format,
++                        va_list args);
++int __cdecl _vsnprintf_s(char* buffer,
++                         size_t size,
++                         size_t count,
++                         const char* format,
++                         va_list args);
++int __cdecl _vsnwprintf_s(wchar_t* buffer,
++                          size_t size,
++                          size_t count,
++                          const wchar_t* format,
++                          va_list args);
++int __cdecl vsscanf(const char* buffer, const char* format, va_list args);
++int __cdecl vsscanf_s(const char* buffer, const char* format, va_list args);
++int __cdecl vswscanf(const wchar_t* buffer,
++                     const wchar_t* format,
++                     va_list args);
++
++// VC120 low-level IO, heap and errors.
++int __cdecl _sopen_s(int* fd,
++                     const char* path,
++                     int oflag,
++                     int shflag,
++                     int pmode);
++int __cdecl _wsopen_s(int* fd,
++                      const wchar_t* path,
++                      int oflag,
++                      int shflag,
++                      int pmode);
++void* __cdecl malloc(size_t size);
++void __cdecl free(void* p);
++void* __cdecl _aligned_malloc(size_t size, size_t alignment);
++void __cdecl _aligned_free(void* p);
++void __cdecl abort(void);
++int* __cdecl _errno(void);
++char* __cdecl __unDName(char* output,
++                        const char* name,
++                        int length,
++                        void* (__cdecl* alloc)(size_t),
++                        void(__cdecl* release)(void*),
++                        unsigned short flags);
++
++// Windows Phone 8.1 (WindowsPhoneCore.lib).
++typedef struct {
++  void* Ptr;
++} PHONE81_SRWLOCK, PHONE81_CONDITION_VARIABLE;
++__declspec(dllimport) void __stdcall AcquireSRWLockExclusive(
++    PHONE81_SRWLOCK* lock);
++__declspec(dllimport) void __stdcall ReleaseSRWLockExclusive(
++    PHONE81_SRWLOCK* lock);
++__declspec(dllimport) int __stdcall SleepConditionVariableSRW(
++    PHONE81_CONDITION_VARIABLE* cv,
++    PHONE81_SRWLOCK* lock,
++    unsigned long milliseconds,
++    unsigned long flags);
++__declspec(dllimport) void __stdcall WakeAllConditionVariable(
++    PHONE81_CONDITION_VARIABLE* cv);
++__declspec(dllimport) void* __stdcall CreateThread(
++    void* security,
++    size_t stack_size,
++    unsigned long(__stdcall* start)(void*),
++    void* parameter,
++    unsigned long flags,
++    unsigned long* thread_id);
++__declspec(dllimport) void __stdcall ExitThread(unsigned long code);
++
++}  // extern "C"
++
++// VC120 exports these with C++ linkage, while the newer headers declare
++// C-linkage functions of the same name.
++typedef void(__cdecl* phone81_terminate_handler)(void);
++typedef int(__cdecl* phone81_new_handler)(size_t);
++phone81_terminate_handler vc120_set_terminate(phone81_terminate_handler)
++    __asm__("?set_terminate@@YAP6AXXZP6AXXZ@Z");
++phone81_terminate_handler vc120_set_unexpected(phone81_terminate_handler)
++    __asm__("?set_unexpected@@YAP6AXXZP6AXXZ@Z");
++phone81_new_handler vc120_set_new_handler(phone81_new_handler)
++    __asm__("?_set_new_handler@@YAP6AHI@ZP6AHI@Z@Z");
++int vc120_set_new_mode(int) __asm__("?_set_new_mode@@YAHH@Z");
++bool vc120_uncaught_exception() __asm__("?__uncaught_exception@@YA_NXZ");
++
++#endif  // BUILD_WIN_PHONE81_VC120_CRT_H_
 diff --git a/build_overrides/dawn.gni b/build_overrides/dawn.gni
 index 0f38b2f..8f4fd96 100644
 --- a/build_overrides/dawn.gni
@@ -6445,6 +7415,30 @@ index d3fdd11..d593df4 100644
  }
  
  group("common") {
+diff --git a/components/download/internal/common/BUILD.gn b/components/download/internal/common/BUILD.gn
+index 7cd0531..2957854 100644
+--- a/components/download/internal/common/BUILD.gn
++++ b/components/download/internal/common/BUILD.gn
+@@ -12,6 +12,7 @@ if (is_android) {
+ }
+ 
+ source_set("internal") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":for_tests",
+     "//components/download/public/common:public",
+diff --git a/components/metrics/BUILD.gn b/components/metrics/BUILD.gn
+index 29b5f3a..8cbae45 100644
+--- a/components/metrics/BUILD.gn
++++ b/components/metrics/BUILD.gn
+@@ -149,6 +149,7 @@ if (!is_cronet_build || is_ios) {
+   }
+ 
+   source_set("metrics") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     sources = [
+       "call_stacks/call_stack_profile_metrics_provider.cc",
+       "child_histogram_fetcher_impl.cc",
 diff --git a/components/os_crypt/async/browser/BUILD.gn b/components/os_crypt/async/browser/BUILD.gn
 index 96537a4..b2c23cd 100644
 --- a/components/os_crypt/async/browser/BUILD.gn
@@ -6482,7 +7476,7 @@ index 8625432..6c82654 100644
      "encryptor.cc",
      "encryptor.h",
 diff --git a/components/policy/core/common/BUILD.gn b/components/policy/core/common/BUILD.gn
-index 798299c..35842a9 100644
+index 798299c..e6ff5eb 100644
 --- a/components/policy/core/common/BUILD.gn
 +++ b/components/policy/core/common/BUILD.gn
 @@ -31,6 +31,7 @@ source_set("policy_namespace_internal") {
@@ -6493,6 +7487,14 @@ index 798299c..35842a9 100644
    sources = [
      "cloud/cloud_policy_util.cc",
      "cloud/cloud_policy_util.h",
+@@ -66,6 +67,7 @@ source_set("util") {
+ }
+ 
+ source_set("internal") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     "//components/policy/*",
+     "//components/privacy_sandbox/*",
 diff --git a/components/policy/tools/generate_policy_source.gni b/components/policy/tools/generate_policy_source.gni
 index 9bfa540..434464c 100644
 --- a/components/policy/tools/generate_policy_source.gni
@@ -7056,6 +8058,129 @@ index 2ce358d..d6aefc8 100644
    return display::win::GetScreenWin()->GetPixelsPerInch(position_in_screen);
  #else
    return gfx::Vector2dF(input::kDefaultPixelsPerInch,
+diff --git a/content/browser/webauth/authenticator_common_impl.cc b/content/browser/webauth/authenticator_common_impl.cc
+index 0e7f6d3..e0a7fd7 100644
+--- a/content/browser/webauth/authenticator_common_impl.cc
++++ b/content/browser/webauth/authenticator_common_impl.cc
+@@ -114,14 +114,14 @@
+ #include "device/fido/cros/authenticator.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "base/strings/utf_string_conversions.h"
+ #include "device/fido/win/authenticator.h"
+ #include "device/fido/win/util.h"
+ #include "device/fido/win/webauthn_api.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS) || (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "content/browser/webauth/is_uvpaa.h"
+ #endif
+ 
+@@ -452,7 +452,7 @@ std::optional<device::CredProtectRequest> ProtectionPolicyToCredProtect(
+               device::UserVerificationRequirement::kPreferred) {
+         return device::CredProtectRequest::kUVRequired;
+       }
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+       // On Windows, if webauthn.dll is version two or below, rk=preferred
+       // cannot be expressed and will be mapped to rk=false. Some security keys
+       // have a bug where they'll return credProtect=1 when credProtect=2 is
+@@ -2356,7 +2356,7 @@ void AuthenticatorCommonImpl::ContinueIsUvpaaAfterOverrideCheck(
+ #if BUILDFLAG(IS_MAC)
+   IsUVPlatformAuthenticatorAvailable(GetBrowserContext(),
+                                      std::move(uma_decorated_callback));
+-#elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
++#elif (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN)) || BUILDFLAG(IS_CHROMEOS)
+   IsUVPlatformAuthenticatorAvailable(std::move(uma_decorated_callback));
+ #else
+   std::move(uma_decorated_callback).Run(false);
+@@ -2471,7 +2471,7 @@ void AuthenticatorCommonImpl::ContinueReportAfterRpIdCheck(
+         req_state_->caller_origin, req_state_->relying_party_id,
+         options->all_accepted_credentials->user_id,
+         options->all_accepted_credentials->all_accepted_credentials_ids);
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+     device::WinWebAuthnApiAuthenticator::SignalAllAcceptedCredentials(
+         device::WinWebAuthnApi::GetDefault(), req_state_->relying_party_id,
+         options->all_accepted_credentials->user_id,
+@@ -2490,7 +2490,7 @@ void AuthenticatorCommonImpl::ContinueReportAfterRpIdCheck(
+         options->current_user_details->name,
+         options->current_user_details->display_name);
+   } else if (options->unknown_credential_id) {
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+     device::WinWebAuthnApiAuthenticator::SignalUnknownCredential(
+         device::WinWebAuthnApi::GetDefault(), *options->unknown_credential_id,
+         req_state_->relying_party_id);
+@@ -3664,7 +3664,7 @@ bool AuthenticatorCommonImpl::CheckRequestKey(RequestKey request_key) {
+ }
+ 
+ bool AuthenticatorCommonImpl::IsGetMatchingCredentialIdsSupported() {
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   return device::WinWebAuthnApi::GetDefault() &&
+          device::WinWebAuthnApi::GetDefault()->IsAvailable() &&
+          device::WinWebAuthnApi::GetDefault()->SupportsSilentDiscovery() &&
+@@ -3679,7 +3679,7 @@ void AuthenticatorCommonImpl::GetMatchingCredentialIds(
+     base::span<const std::vector<uint8_t>> credential_ids,
+     bool require_third_party_payment_bit,
+     base::OnceCallback<void(std::vector<std::vector<uint8_t>>)> callback) {
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   // Third-party payment bit checking in OS stores is not yet supported.
+   // TODO(crbug.com/40868539): Support `require_third_party_payment_bit` by
+   // checking for `bThirdPartyPayment` being present.
+diff --git a/content/browser/webauth/is_uvpaa.cc b/content/browser/webauth/is_uvpaa.cc
+index 7f8cc87..333f8fa 100644
+--- a/content/browser/webauth/is_uvpaa.cc
++++ b/content/browser/webauth/is_uvpaa.cc
+@@ -20,7 +20,7 @@
+ #include "device/fido/public/features.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "device/fido/win/authenticator.h"
+ #include "device/fido/win/webauthn_api.h"
+ #endif
+@@ -59,7 +59,7 @@ void IsUVPlatformAuthenticatorAvailable(
+                                                        std::move(callback));
+ }
+ 
+-#elif BUILDFLAG(IS_WIN)
++#elif (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ void IsUVPlatformAuthenticatorAvailable(
+     IsUVPlatformAuthenticatorAvailableCallback callback) {
+   device::WinWebAuthnApiAuthenticator::
+diff --git a/content/browser/webauth/virtual_fido_discovery_factory.cc b/content/browser/webauth/virtual_fido_discovery_factory.cc
+index 3ba2b91..583d344 100644
+--- a/content/browser/webauth/virtual_fido_discovery_factory.cc
++++ b/content/browser/webauth/virtual_fido_discovery_factory.cc
+@@ -71,7 +71,7 @@ bool VirtualFidoDiscoveryFactory::IsTestOverride() {
+   return true;
+ }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ std::unique_ptr<device::FidoDiscoveryBase>
+ VirtualFidoDiscoveryFactory::MaybeCreateWinWebAuthnApiDiscovery() {
+   return nullptr;
+diff --git a/content/browser/webauth/virtual_fido_discovery_factory.h b/content/browser/webauth/virtual_fido_discovery_factory.h
+index 93a6d94..4330a90 100644
+--- a/content/browser/webauth/virtual_fido_discovery_factory.h
++++ b/content/browser/webauth/virtual_fido_discovery_factory.h
+@@ -49,7 +49,7 @@ class VirtualFidoDiscoveryFactory
+   std::vector<std::unique_ptr<::device::FidoDiscoveryBase>> Create(
+       device::FidoTransportProtocol transport) override;
+   bool IsTestOverride() override;
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   std::unique_ptr<device::FidoDiscoveryBase>
+   MaybeCreateWinWebAuthnApiDiscovery() override;
+ #endif
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
 index 1afecb8..9606c94 100644
 --- a/content/shell/BUILD.gn
@@ -8804,6 +9929,259 @@ index 490b8a3..eaac767 100644
    DCHECK(IsBluetoothSupported());
  
    if (!classic_adapter_) {
+diff --git a/device/fido/BUILD.gn b/device/fido/BUILD.gn
+index 91f4152..1c9c2e7 100644
+--- a/device/fido/BUILD.gn
++++ b/device/fido/BUILD.gn
+@@ -3,9 +3,19 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ 
++# Windows Phone 8.1 has no webauthn.dll; the Windows WebAuthn integration is
++# compiled out, here and in the code that includes these headers.
++config("no_win_webauthn") {
++  defines = [ "FIDO_NO_WIN_WEBAUTHN" ]
++}
++
+ component("fido") {
++  if (is_win && phone81_port) {
++    all_dependent_configs = [ ":no_win_webauthn" ]
++  }
+   # These source files represent the minimal subset of files used for passkey
+   # related authentication functions, with a limited amount of dependencies,
+   # making it possible to build these on any platform, including iOS.
+@@ -255,7 +265,7 @@ component("fido") {
+       deps += [ "//build:branding_buildflags" ]
+     }
+ 
+-    if (is_win) {
++    if (is_win && !phone81_port) {
+       sources += [
+         "win/authenticator.cc",
+         "win/authenticator.h",
+diff --git a/device/fido/cable/v2_discovery.cc b/device/fido/cable/v2_discovery.cc
+index 454ccc2..728be7b 100644
+--- a/device/fido/cable/v2_discovery.cc
++++ b/device/fido/cable/v2_discovery.cc
+@@ -353,7 +353,7 @@ void Discovery::DeviceChanged(BluetoothAdapter* adapter,
+ }
+ 
+ void Discovery::AdapterPoweredChanged(BluetoothAdapter* adapter, bool powered) {
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   // On Windows, the power-on event appears to race against initialization of
+   // the adapter, such that one of the WinRT API calls inside
+   // BluetoothAdapter::StartDiscoverySessionWithFilter() can fail with "Device
+diff --git a/device/fido/fake_fido_discovery.cc b/device/fido/fake_fido_discovery.cc
+index 951f514..e8c1713 100644
+--- a/device/fido/fake_fido_discovery.cc
++++ b/device/fido/fake_fido_discovery.cc
+@@ -114,7 +114,7 @@ FakeFidoDiscoveryFactory::Create(FidoTransportProtocol transport) {
+   NOTREACHED();
+ }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ std::unique_ptr<device::FidoDiscoveryBase>
+ FakeFidoDiscoveryFactory::MaybeCreateWinWebAuthnApiDiscovery() {
+   if (!discover_win_webauthn_api_authenticator_) {
+diff --git a/device/fido/fake_fido_discovery.h b/device/fido/fake_fido_discovery.h
+index df0a989..e9eca81 100644
+--- a/device/fido/fake_fido_discovery.h
++++ b/device/fido/fake_fido_discovery.h
+@@ -132,7 +132,7 @@ class FakeFidoDiscoveryFactory : public device::FidoDiscoveryFactory {
+   std::vector<std::unique_ptr<FidoDiscoveryBase>> Create(
+       FidoTransportProtocol transport) override;
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   std::unique_ptr<device::FidoDiscoveryBase>
+   MaybeCreateWinWebAuthnApiDiscovery() override;
+ #endif
+diff --git a/device/fido/fido_discovery_factory.cc b/device/fido/fido_discovery_factory.cc
+index 2e8b50b..187a8fd 100644
+--- a/device/fido/fido_discovery_factory.cc
++++ b/device/fido/fido_discovery_factory.cc
+@@ -17,7 +17,7 @@
+ #include "device/fido/hid/fido_hid_discovery.h"
+ #include "device/fido/public/features.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ // clang-format off
+ // rpc.h needs to be included before winuser.h.
+ #include <rpc.h>
+@@ -73,7 +73,7 @@ std::vector<std::unique_ptr<FidoDiscoveryBase>> FidoDiscoveryFactory::Create(
+         return {};
+       }
+ #endif  // BUILDFLAG(IS_MAC)
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+       {
+         device::WinWebAuthnApi* const webauthn_api =
+             device::WinWebAuthnApi::GetDefault();
+@@ -184,7 +184,7 @@ FidoDiscoveryFactory::SingleDiscovery(
+   return ret;
+ }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ std::unique_ptr<FidoDiscoveryBase>
+ FidoDiscoveryFactory::MaybeCreateWinWebAuthnApiDiscovery() {
+   // TODO(martinkr): Inject the window from which the request originated.
+diff --git a/device/fido/fido_discovery_factory.h b/device/fido/fido_discovery_factory.h
+index 71a27cf..fcba95a 100644
+--- a/device/fido/fido_discovery_factory.h
++++ b/device/fido/fido_discovery_factory.h
+@@ -117,7 +117,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoDiscoveryFactory {
+   }
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   // Instantiates a FidoDiscovery for the native Windows WebAuthn API where
+   // available. Returns nullptr otherwise.
+   virtual std::unique_ptr<FidoDiscoveryBase>
+@@ -188,7 +188,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoDiscoveryFactory {
+   std::unique_ptr<FidoDiscoveryBase::EventStream<
+       std::unique_ptr<enclave::CredentialRequest>>>
+       enclave_ui_request_stream_;
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   bool force_hybrid_discovery_ = false;
+ #endif  // BUILDFLAG(IS_WIN)
+ };
+diff --git a/device/fido/fido_request_handler_base.cc b/device/fido/fido_request_handler_base.cc
+index 9280913..bf141b0 100644
+--- a/device/fido/fido_request_handler_base.cc
++++ b/device/fido/fido_request_handler_base.cc
+@@ -27,7 +27,7 @@
+ #include "device/fido/public/features.h"
+ #include "device/fido/public/fido_constants.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "device/fido/win/authenticator.h"
+ #include "device/fido/win/util.h"
+ #include "device/fido/win/webauthn_api.h"
+@@ -192,7 +192,7 @@ void FidoRequestHandlerBase::InitDiscoveries(
+     base::flat_set<FidoTransportProtocol> available_transports,
+     bool consider_enclave) {
+   FIDO_LOG(DEBUG) << "Initializing FIDO discoveries";
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   // Try to instantiate the discovery for proxying requests to the native
+   // Windows WebAuthn API; or fall back to using the regular device transport
+   // discoveries if the API is unavailable.
+@@ -326,7 +326,7 @@ void FidoRequestHandlerBase::InitDiscoveries(
+       device::fido::mac::DeviceHasBiometricsAvailable();
+   FIDO_LOG(DEBUG) << "MacOS biometrics availability check done";
+   MaybeSignalTransportsEnumerated();
+-#elif BUILDFLAG(IS_WIN)
++#elif (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   transport_availability_callback_readiness_
+       ->platform_biometrics_check_pending = true;
+   FIDO_LOG(DEBUG) << "Checking for Windows biometrics availability";
+@@ -560,7 +560,7 @@ void FidoRequestHandlerBase::AuthenticatorAdded(
+     VLOG(2) << "Embedder controls the dispatch.";
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   if (authenticator->GetType() == AuthenticatorType::kWinNative) {
+     DCHECK(transport_availability_info_.has_win_native_api_authenticator);
+     transport_availability_info_
+diff --git a/device/fido/get_assertion_request_handler.cc b/device/fido/get_assertion_request_handler.cc
+index a4a97c3..17bc1f1 100644
+--- a/device/fido/get_assertion_request_handler.cc
++++ b/device/fido/get_assertion_request_handler.cc
+@@ -39,7 +39,7 @@
+ #include "device/fido/mac/authenticator.h"
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "device/fido/win/authenticator.h"
+ #include "device/fido/win/type_conversions.h"
+ #endif
+@@ -599,7 +599,7 @@ void GetAssertionRequestHandler::HandleResponse(
+     return;
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   if (authenticator->GetType() == AuthenticatorType::kWinNative) {
+     state_ = State::kFinished;
+     CancelActiveAuthenticators(authenticator->GetId());
+diff --git a/device/fido/make_credential_request_handler.cc b/device/fido/make_credential_request_handler.cc
+index a18e77b..883a199 100644
+--- a/device/fido/make_credential_request_handler.cc
++++ b/device/fido/make_credential_request_handler.cc
+@@ -30,7 +30,7 @@
+ #include "device/fido/public/fido_transport_protocol.h"
+ #include "device/fido/public/fido_types.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "device/fido/win/authenticator.h"
+ #include "device/fido/win/type_conversions.h"
+ #include "third_party/microsoft_webauthn/src/webauthn.h"
+@@ -106,7 +106,7 @@ MakeCredentialStatus IsCandidateAuthenticatorPostTouch(
+   if (options.large_blob_support == LargeBlobSupport::kRequired &&
+       (!auth_options.large_blob_type ||
+        !request.resident_key_required
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+        // Windows only supports large blobs for cross-platform credentials.
+        || request.authenticator_attachment == AuthenticatorAttachment::kPlatform
+ #endif
+@@ -753,7 +753,7 @@ void MakeCredentialRequestHandler::HandleResponse(
+     return;
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   if (authenticator->GetType() == AuthenticatorType::kWinNative) {
+     state_ = State::kFinished;
+     if (status != MakeCredentialStatus::kSuccess) {
+@@ -1006,7 +1006,7 @@ void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
+       // storage space for another credential, and we can obtain UV via client
+       // PIN or an internal modality.
+       request->resident_key_required =
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+           // Windows does not yet support rk=preferred.
+           authenticator->GetType() != AuthenticatorType::kWinNative &&
+ #endif
+diff --git a/device/fido/virtual_fido_device_factory.cc b/device/fido/virtual_fido_device_factory.cc
+index 9cec8d3..00d74c1 100644
+--- a/device/fido/virtual_fido_device_factory.cc
++++ b/device/fido/virtual_fido_device_factory.cc
+@@ -78,7 +78,7 @@ void VirtualFidoDeviceFactory::DisconnectDevice() {
+   }
+ }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ std::unique_ptr<device::FidoDiscoveryBase>
+ VirtualFidoDeviceFactory::MaybeCreateWinWebAuthnApiDiscovery() {
+   if (!discover_win_webauthn_api_authenticator_) {
+diff --git a/device/fido/virtual_fido_device_factory.h b/device/fido/virtual_fido_device_factory.h
+index 862a4cc..7b5fe46 100644
+--- a/device/fido/virtual_fido_device_factory.h
++++ b/device/fido/virtual_fido_device_factory.h
+@@ -65,7 +65,7 @@ class VirtualFidoDeviceFactory : public device::FidoDiscoveryFactory {
+   // nothing.
+   void DisconnectDevice();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   std::unique_ptr<device::FidoDiscoveryBase>
+   MaybeCreateWinWebAuthnApiDiscovery() override;
+ #endif
 diff --git a/gin/v8_initializer.cc b/gin/v8_initializer.cc
 index f63abad..2b70f55 100644
 --- a/gin/v8_initializer.cc
@@ -13956,79 +15334,111 @@ index 79b728d..242de80 100644
  namespace {
  // Referenced from base/win/registry.cc in Chromium
  std::optional<DWORD> ReadFromDWORDRegistryKey(HKEY registerKey, const char* registerKeyName) {
-diff --git a/third_party/dawn/src/tint/utils/system/BUILD.gn b/third_party/dawn/src/tint/utils/system/BUILD.gn
-index f3a9e2a..531838e 100644
---- a/third_party/dawn/src/tint/utils/system/BUILD.gn
-+++ b/third_party/dawn/src/tint/utils/system/BUILD.gn
-@@ -38,6 +38,11 @@ import("../../../../scripts/dawn_overrides_with_defaults.gni")
- import("../../../../scripts/tint_overrides_with_defaults.gni")
+diff --git a/third_party/dawn/src/dawn/wire/BUILD.gn b/third_party/dawn/src/dawn/wire/BUILD.gn
+index cbe5dc7..cad66c7 100644
+--- a/third_party/dawn/src/dawn/wire/BUILD.gn
++++ b/third_party/dawn/src/dawn/wire/BUILD.gn
+@@ -29,6 +29,11 @@ import("../../../scripts/dawn_overrides_with_defaults.gni")
  
- import("${tint_src_dir}/tint.gni")
+ import("${dawn_root}/generator/dawn_generator.gni")
+ import("${dawn_root}/scripts/dawn_component.gni")
 +import("//build/config/win/phone81.gni")
 +
-+# Windows Phone 8.1 lacks the console/environment Win32 APIs: use the
-+# portable implementations.
-+_tint_win = tint_build_is_win && !phone81_port
++# Windows Phone 8.1 builds no WebGPU: the wire client is linked only for the
++# GPU client's shared-image helpers, without Tint (which needs a Go generator).
++_wire_no_tint = phone81_port
  
- libtint_source_set("system") {
-   sources = [
-@@ -55,11 +60,11 @@ libtint_source_set("system") {
-     "${tint_src_dir}/utils/rtti",
+ # Public dawn wire headers so they can be publicly visible for dependencies of
+ # dawn/wire
+@@ -98,8 +103,10 @@ source_set("common_sources") {
+   deps = [
+     ":gen",
+     "${dawn_root}/src/dawn/common",
+-    "${dawn_root}/src/tint/lang/wgsl",
    ]
++  if (!_wire_no_tint) {
++    deps += [ "${dawn_root}/src/tint/lang/wgsl" ]
++  }
  
--  if (!tint_build_is_linux && !tint_build_is_mac && !tint_build_is_win) {
-+  if (!tint_build_is_linux && !tint_build_is_mac && !_tint_win) {
-     sources += [ "terminal_other.cc" ]
-   }
- 
--  if (!tint_build_is_win) {
-+  if (!_tint_win) {
-     sources += [ "env_other.cc" ]
-   }
- 
-@@ -75,7 +80,7 @@ libtint_source_set("system") {
-     sources += [ "executable_file_mac.cc" ]
-   }
- 
--  if (tint_build_is_win) {
-+  if (_tint_win) {
-     sources += [
-       "env_windows.cc",
-       "executable_path_windows.cc",
-diff --git a/third_party/dawn/src/tint/utils/text/BUILD.gn b/third_party/dawn/src/tint/utils/text/BUILD.gn
-index b3fad5b..6f4e86c 100644
---- a/third_party/dawn/src/tint/utils/text/BUILD.gn
-+++ b/third_party/dawn/src/tint/utils/text/BUILD.gn
-@@ -38,6 +38,11 @@ import("../../../../scripts/dawn_overrides_with_defaults.gni")
- import("../../../../scripts/tint_overrides_with_defaults.gni")
- 
- import("${tint_src_dir}/tint.gni")
-+import("//build/config/win/phone81.gni")
-+
-+# Windows Phone 8.1 lacks the console/environment Win32 APIs: use the
-+# portable implementations.
-+_tint_win = tint_build_is_win && !phone81_port
- 
- if (tint_build_unittests || tint_build_benchmarks) {
-   import("//testing/test.gni")
-@@ -76,7 +81,7 @@ libtint_source_set("text") {
-     "${tint_src_dir}/utils/system",
+   configs += [ "${dawn_root}/src/dawn/common:internal_config" ]
+   sources = filter_exclude(get_target_outputs(":gen"),
+@@ -135,8 +142,12 @@ source_set("client_sources") {
+   deps = [
+     ":gen",
+     "${dawn_root}/src/dawn/common",
+-    "${dawn_root}/src/tint/lang/wgsl",
    ]
++  if (_wire_no_tint) {
++    defines = [ "DAWN_WIRE_NO_TINT" ]
++  } else {
++    deps += [ "${dawn_root}/src/tint/lang/wgsl" ]
++  }
  
--  if (!tint_build_is_linux && !tint_build_is_mac && !tint_build_is_win) {
-+  if (!tint_build_is_linux && !tint_build_is_mac && !_tint_win) {
-     sources += [ "styled_text_printer_other.cc" ]
-   }
+   configs += [ "${dawn_root}/src/dawn/common:internal_config" ]
+   sources = filter_include(get_target_outputs(":gen"), [ "*/client/*" ])
+@@ -189,8 +200,10 @@ source_set("server_sources") {
+   deps = [
+     ":gen",
+     "${dawn_root}/src/dawn/common",
+-    "${dawn_root}/src/tint/lang/wgsl",
+   ]
++  if (!_wire_no_tint) {
++    deps += [ "${dawn_root}/src/tint/lang/wgsl" ]
++  }
  
-@@ -84,7 +89,7 @@ libtint_source_set("text") {
-     sources += [ "styled_text_printer_posix.cc" ]
-   }
+   configs += [ "${dawn_root}/src/dawn/common:internal_config" ]
+   sources = filter_include(get_target_outputs(":gen"), [ "*/server/*" ])
+diff --git a/third_party/dawn/src/dawn/wire/client/Instance.cpp b/third_party/dawn/src/dawn/wire/client/Instance.cpp
+index d404601..7ba90de 100644
+--- a/third_party/dawn/src/dawn/wire/client/Instance.cpp
++++ b/third_party/dawn/src/dawn/wire/client/Instance.cpp
+@@ -43,7 +43,9 @@
+ #include "src/dawn/wire/client/EventManager.h"
+ #include "src/utils/compiler.h"
+ #include "src/utils/log.h"
++#if !defined(DAWN_WIRE_NO_TINT)
+ #include "tint/tint.h"
++#endif
  
--  if (tint_build_is_win) {
-+  if (_tint_win) {
-     sources += [ "styled_text_printer_windows.cc" ]
-   }
+ namespace dawn::wire::client {
+ namespace {
+@@ -112,6 +114,7 @@ class RequestAdapterEvent : public TrackedEvent {
+     Ref<Adapter> mAdapter;
+ };
+ 
++#if !defined(DAWN_WIRE_NO_TINT)
+ wgpu::WGSLLanguageFeatureName ToWGPUWGSLLanguageFeature(tint::wgsl::LanguageFeature f) {
+     switch (f) {
+ #define CASE(WgslName, WgpuName)                \
+@@ -123,6 +126,7 @@ wgpu::WGSLLanguageFeatureName ToWGPUWGSLLanguageFeature(tint::wgsl::LanguageFeat
+             DAWN_UNREACHABLE();
+     }
  }
++#endif  // !defined(DAWN_WIRE_NO_TINT)
+ 
+ }  // anonymous namespace
+ 
+@@ -247,6 +251,12 @@ wgpu::WaitStatus Instance::APIWaitAny(Span<FutureWaitInfo> infos, uint64_t timeo
+ 
+ void Instance::GatherWGSLFeatures(const DawnWireWGSLControl* wgslControl,
+                                   const DawnWGSLBlocklist* wgslBlocklist) {
++#if defined(DAWN_WIRE_NO_TINT)
++    // Built without Tint (Windows Phone 8.1, no WebGPU): expose no WGSL language
++    // features.
++    (void)wgslControl;
++    (void)wgslBlocklist;
++#else
+     DawnWireWGSLControl defaultWgslControl{};
+     if (wgslControl == nullptr) {
+         wgslControl = &defaultWgslControl;
+@@ -307,6 +317,7 @@ void Instance::GatherWGSLFeatures(const DawnWireWGSLControl* wgslControl,
+             }
+         }
+     }
++#endif  // defined(DAWN_WIRE_NO_TINT)
+ }
+ 
+ bool Instance::APIHasWGSLLanguageFeature(wgpu::WGSLLanguageFeatureName feature) const {
 diff --git a/third_party/dawn/src/utils/platform.h b/third_party/dawn/src/utils/platform.h
 index 4dd58a4..2715837 100644
 --- a/third_party/dawn/src/utils/platform.h

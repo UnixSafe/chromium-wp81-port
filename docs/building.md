@@ -33,7 +33,7 @@ python3 tools/create-phone81-sysroot.py \
 
 Generate a `winuwp` ARM graph using `target_winuwp_version="8.1"` and
 `target_winuwp_family="phone"`, and set `phone81_port=true` and
-`skia_use_dawn=false` for the Phone probe. Also set `angle_enable_d3d11=false`, `enable_swiftshader=false`, `enable_swiftshader_vulkan=false`, `dawn_use_swiftshader=false` `enable_libaom=false` (AV1 decoding stays on dav1d), `v8_enable_etw_stack_walking=false`, `v8_enable_system_instrumentation=false`, `rtc_enable_win_wgc=false` and `wp81_linux_v8_tools="//out/wp81-snapshot-linuxhost/clang_x86_v8_arm"` (the Linux IA32 V8 generators): the Phone 8.1 SDK has no `d3d11_3.h`, and the Phone graph keeps only ANGLE's Null backend and no SwiftShader (the shell runs with `--disable-gpu`, `--disable-software-rasterizer` and a CPU compositor). Disable precompiled headers and Control Flow
+`skia_use_dawn=false` for the Phone probe. Also set `angle_enable_d3d11=false`, `enable_swiftshader=false`, `enable_swiftshader_vulkan=false`, `dawn_use_swiftshader=false` `enable_libaom=false` (AV1 decoding stays on dav1d), `v8_enable_etw_stack_walking=false`, `v8_enable_system_instrumentation=false`, `rtc_enable_win_wgc=false`, `angle_shared_libvulkan=false`, `phone81_desktop_sdk_include="<Windows SDK>/Include/<version>"` and `wp81_linux_v8_tools="//out/wp81-snapshot-linuxhost/clang_x86_v8_arm"` (the Linux IA32 V8 generators): the Phone 8.1 SDK has no `d3d11_3.h`, and the Phone graph keeps only ANGLE's Null backend and no SwiftShader (the shell runs with `--disable-gpu`, `--disable-software-rasterizer` and a CPU compositor). Disable precompiled headers and Control Flow
 Guard for this target. Set `CHROMIUM_PHONE81_SDK=1`,
 `CHROMIUM_XWIN_SYSROOT=1`, `WINDOWSSDKDIR` and `GYP_MSVS_OVERRIDE_PATH` to the
 overlay path, and `DEPOT_TOOLS_WIN_TOOLCHAIN=1` for **both** `gn gen` and Ninja:
@@ -119,3 +119,21 @@ Phone target V8 settings before generating a launcher. The launcher accepts
 only IA32 ELF binaries, mounts the Chromium source read-only and the output
 directory read-write, and runs with Docker networking disabled. The generated
 snapshot is still untested on a phone.
+
+## Graphics headers for compile-only GPU code
+
+Chromium's Windows GPU code is compiled for Phone even though the shell runs
+with `--disable-gpu`. It needs DXGI 1.4-1.6, D3D11.3/11.4, D3D12 and
+DirectComposition declarations that the Phone 8.1 SDK lacks or keeps in the
+desktop partition. `tools/add-phone81-graphics-headers.sh <Windows SDK
+Include/<version>> <overlay>/sdk/include/um` replaces the overlay's
+DXGI/D3D11/D3DCommon/rpcndr headers with the coherent Windows SDK set (Phone
+originals kept as `*.phone-orig`) and adds partition-lifting wrappers for
+`dcomp.h`, `dwmapi.h` and `shellscalingapi.h`. Only declarations change; the
+link still uses the Phone import libraries. Run it after
+`create-phone81-sysroot.py`. Microsoft headers are never committed.
+
+Targets that call desktop Win32 through code the Phone shell never runs add
+`//build/config/win:phone81_desktop_declarations`; the final PE import audit
+decides which of those imports may stay delay-loaded and which must be
+replaced.

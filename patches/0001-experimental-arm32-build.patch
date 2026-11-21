@@ -5541,10 +5541,10 @@ index c4b2d06..a5149e7 100644
  void ScopedVariant::Set(const wchar_t* str) {
 diff --git a/base/win/windows_phone_8_1.h b/base/win/windows_phone_8_1.h
 new file mode 100644
-index 0000000..bf045b4
+index 0000000..67aeb33
 --- /dev/null
 +++ b/base/win/windows_phone_8_1.h
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,22 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -5556,7 +5556,11 @@ index 0000000..bf045b4
 +#include <winapifamily.h>
 +#endif
 +
-+#if defined(WINUWP_8_1) && (WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++// CHROMIUM_PHONE81_DESKTOP_DECLARATIONS: a Phone 8.1 target compiled with the
++// desktop Win32 declarations (//build/config/win:phone81_desktop_declarations)
++// is still a Phone build.
++#if defined(WINUWP_8_1) && ((WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP) || \
++                            defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS))
 +#define BASE_WIN_IS_PHONE_8_1 1
 +#else
 +#define BASE_WIN_IS_PHONE_8_1 0
@@ -5752,10 +5756,18 @@ index d339de7..68f2e66 100644
      rust_abi_target = "x86_64-pc-windows-msvc"
    } else if (current_cpu == "x86") {
 diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
-index 1edf103..e56dbb8 100644
+index 1edf103..b82cb61 100644
 --- a/build/config/win/BUILD.gn
 +++ b/build/config/win/BUILD.gn
-@@ -112,6 +112,8 @@ config("compiler") {
+@@ -9,6 +9,7 @@ import("//build/config/compiler/compiler.gni")
+ import("//build/config/rust.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//build/config/win/control_flow_guard.gni")
++import("//build/config/win/phone81.gni")
+ import("//build/config/win/visual_studio_version.gni")
+ import("//build/timestamp.gni")
+ import("//build/toolchain/rbe.gni")
+@@ -112,6 +113,8 @@ config("compiler") {
        }
      } else if (current_cpu == "arm64") {
        cflags += [ "--target=aarch64-pc-windows" ]
@@ -5764,7 +5776,7 @@ index 1edf103..e56dbb8 100644
      } else {
        assert(false, "unknown current_cpu " + current_cpu)
      }
-@@ -275,7 +277,9 @@ config("runtime_library") {
+@@ -275,7 +278,9 @@ config("runtime_library") {
      } else {
        defines += [ "WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP" ]
      }
@@ -5775,7 +5787,7 @@ index 1edf103..e56dbb8 100644
  
      # This warning is given because the linker cannot tell the difference
      # between consuming WinRT APIs versus authoring WinRT within static
-@@ -288,7 +292,8 @@ config("runtime_library") {
+@@ -288,7 +293,8 @@ config("runtime_library") {
      if (target_winuwp_version == "10") {
        defines += [ "WIN10=_WIN32_WINNT_WIN10" ]
      } else if (target_winuwp_version == "8.1") {
@@ -5785,19 +5797,54 @@ index 1edf103..e56dbb8 100644
      } else if (target_winuwp_version == "8.0") {
        defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
      }
-@@ -304,15 +309,23 @@ config("runtime_library") {
+@@ -303,16 +309,58 @@ config("runtime_library") {
+ # Some third-party libraries assume that these defines set what version of
  # Windows is available at runtime. Targets using these libraries need to
  # manually override this config for their compiles.
- config("winver") {
+-config("winver") {
 -  defines = [
 -    "NTDDI_VERSION=NTDDI_WIN11_BR",
--
++# Windows Phone 8.1: Chromium's Windows UI and GPU layers call Win32 desktop
++# functions through code that the Phone shell never runs (no HWND windows,
++# --disable-gpu, --single-process). Targets listed with this config compile
++# against the desktop declarations, with a newer Windows SDK as a fallback for
++# headers the Phone SDK lacks. The final link against WindowsPhoneCore.lib and
++# the PE import audit decide what may stay (delay-loaded) and what must be
++# replaced. BASE_WIN_IS_PHONE_8_1 stays 1 in these targets (see
++# base/win/windows_phone_8_1.h), so shared layouts do not change.
++config("phone81_desktop_declarations") {
++  if (current_os == "winuwp" && phone81_port) {
++    cflags = [
++      "/UWINAPI_FAMILY",
++      "/DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP",
++      "/D_ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1",
++      "/DCHROMIUM_PHONE81_DESKTOP_DECLARATIONS=1",
++
++      # Declare the Windows 10/11 interfaces (DirectComposition, DXGI 1.6...)
++      # for these compile-only paths; nothing raises the Phone run-time API.
++      "/UNTDDI_VERSION",
++      "/U_WIN32_WINNT",
++      "/UWINVER",
++      "/DNTDDI_VERSION=0x0A000010",
++      "/D_WIN32_WINNT=0x0A00",
++      "/DWINVER=0x0A00",
++    ]
++    if (phone81_desktop_sdk_include != "") {
++      cflags += [
++        "-imsvc" + phone81_desktop_sdk_include + "/um",
++        "-imsvc" + phone81_desktop_sdk_include + "/shared",
++      ]
++    }
++  }
++}
+ 
 -    # We can't say `=_WIN32_WINNT_WIN10` here because some files do
 -    # `#if WINVER < 0x0600` without including windows.h before,
 -    # and then _WIN32_WINNT_WIN10 isn't yet known to be 0x0A00.
 -    "_WIN32_WINNT=0x0A00",
 -    "WINVER=0x0A00",
 -  ]
++config("winver") {
 +  if (target_os == "winuwp" && target_winuwp_version == "8.1") {
 +    defines = [
 +      "NTDDI_VERSION=NTDDI_WINBLUE",
@@ -5818,7 +5865,7 @@ index 1edf103..e56dbb8 100644
  }
  
  # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
-@@ -350,16 +363,19 @@ config("default_cfg_compiler") {
+@@ -350,16 +398,19 @@ config("default_cfg_compiler") {
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
    # The CFG guards are only emitted if |win_enable_cfg_guards| is enabled.
@@ -5847,7 +5894,7 @@ index 1edf103..e56dbb8 100644
    }
  }
  
-@@ -369,10 +385,12 @@ config("disable_guards_cfg_compiler") {
+@@ -369,10 +420,12 @@ config("disable_guards_cfg_compiler") {
    # Emit table of address-taken functions for Control-Flow Guard (CFG).
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
@@ -5863,7 +5910,7 @@ index 1edf103..e56dbb8 100644
  }
  
  config("cfi_linker") {
-@@ -383,7 +401,8 @@ config("cfi_linker") {
+@@ -383,7 +436,8 @@ config("cfi_linker") {
    # ASan and CFG leads to slow process startup. Chromium's test runner uses
    # lots of child processes, so this means things are really slow. Disable CFG
    # for now. https://crbug.com/846966
@@ -5875,10 +5922,10 @@ index 1edf103..e56dbb8 100644
    }
 diff --git a/build/config/win/phone81.gni b/build/config/win/phone81.gni
 new file mode 100644
-index 0000000..d5eff06
+index 0000000..1a24019
 --- /dev/null
 +++ b/build/config/win/phone81.gni
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,14 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -5888,6 +5935,10 @@ index 0000000..d5eff06
 +  # target_os="winuwp", target_winuwp_version="8.1", and
 +  # target_winuwp_family="phone".
 +  phone81_port = false
++
++  # Absolute path of a Windows 10/11 SDK "Include/<version>" directory (with
++  # um/ and shared/). Only used by phone81_desktop_declarations below.
++  phone81_desktop_sdk_include = ""
 +}
 diff --git a/build/nocompile.gni b/build/nocompile.gni
 index cb65827..1f3c5a0 100644
@@ -21812,7 +21863,7 @@ index ae172ae..4f5c1f8 100644
  
  }  // namespace gfx
 diff --git a/ui/gfx/color_space_win.cc b/ui/gfx/color_space_win.cc
-index e25e885..837996b 100644
+index e25e885..5963f09 100644
 --- a/ui/gfx/color_space_win.cc
 +++ b/ui/gfx/color_space_win.cc
 @@ -11,6 +11,7 @@
@@ -21823,18 +21874,23 @@ index e25e885..837996b 100644
  DXVA2_ExtendedFormat ColorSpaceWin::GetExtendedFormat(
      const ColorSpace& color_space) {
    DXVA2_ExtendedFormat format{};
-@@ -347,7 +348,10 @@ DXGI_COLOR_SPACE_TYPE ColorSpaceWin::GetDXGIColorSpace(
-   }
+@@ -138,6 +139,7 @@ DXVA2_ExtendedFormat ColorSpaceWin::GetExtendedFormat(
+ 
+   return format;
+ }
++#endif  // !defined(WINUWP_8_1)
+ 
+ bool ColorSpaceWin::CanConvertToDXGIColorSpace(const ColorSpace& color_space) {
+   // RGB color space is not supported yet.
+@@ -348,6 +350,7 @@ DXGI_COLOR_SPACE_TYPE ColorSpaceWin::GetDXGIColorSpace(
  }
  
-+#endif  // !defined(WINUWP_8_1)
-+
  DXGI_FORMAT ColorSpaceWin::GetDXGIFormat(const gfx::ColorSpace& color_space) {
 +#if !defined(WINUWP_8_1)
    // The PQ transfer function needs 10 bits.
    if (color_space.GetTransferID() == gfx::ColorSpace::TransferID::PQ)
      return DXGI_FORMAT_R10G10B10A2_UNORM;
-@@ -358,6 +362,8 @@ DXGI_FORMAT ColorSpaceWin::GetDXGIFormat(const gfx::ColorSpace& color_space) {
+@@ -358,6 +361,8 @@ DXGI_FORMAT ColorSpaceWin::GetDXGIFormat(const gfx::ColorSpace& color_space) {
  
    // For now just give everything else 8 bits. We will want to use 10 or 16 bits
    // for BT2020 gamuts.
@@ -21844,7 +21900,7 @@ index e25e885..837996b 100644
  }
  
 diff --git a/ui/gfx/color_space_win.h b/ui/gfx/color_space_win.h
-index 7943893..5466f80 100644
+index 7943893..93ebfdf 100644
 --- a/ui/gfx/color_space_win.h
 +++ b/ui/gfx/color_space_win.h
 @@ -6,8 +6,10 @@
@@ -21858,20 +21914,22 @@ index 7943893..5466f80 100644
  
  // Must be included after d3d headers, use #if to avoid lint errors.
  #if 1
-@@ -20,6 +22,8 @@ namespace gfx {
+@@ -20,7 +22,11 @@ namespace gfx {
  
  class COLOR_SPACE_EXPORT ColorSpaceWin {
   public:
-+  // DXVA2 and selectable DXGI color spaces require desktop/newer SDKs.
++  // DXVA2 requires the desktop SDK. The selectable DXGI color spaces come
++  // from the DXGI 1.4+ headers of the local Phone overlay.
 +#if !defined(WINUWP_8_1)
    static DXVA2_ExtendedFormat GetExtendedFormat(const ColorSpace& color_space);
++#endif
  
    // Returns false if the given color space couldn't be supported by DXGI.
-@@ -32,8 +36,10 @@ class COLOR_SPACE_EXPORT ColorSpaceWin {
+   static bool CanConvertToDXGIColorSpace(const ColorSpace& color_space);
+@@ -32,8 +38,9 @@ class COLOR_SPACE_EXPORT ColorSpaceWin {
    static DXGI_COLOR_SPACE_TYPE GetDXGIColorSpace(const ColorSpace& color_space,
                                                   bool force_yuv = false);
  
-+#endif
 +
    // Get DXGI format for swap chain. This will default to 8-bit, but will use
 -  // 10-bit or half-float for HDR color spaces.
@@ -22475,10 +22533,45 @@ index 6497acc..5da2644 100644
  #include <string>
  
 diff --git a/ui/gl/BUILD.gn b/ui/gl/BUILD.gn
-index a89e6c2..4cb1924 100644
+index a89e6c2..91c5b29 100644
 --- a/ui/gl/BUILD.gn
 +++ b/ui/gl/BUILD.gn
-@@ -344,10 +344,12 @@ component("gl") {
+@@ -7,6 +7,7 @@ import("//build/config/chrome_build.gni")
+ import("//build/config/linux/pkg_config.gni")
+ import("//build/config/ozone.gni")
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//gpu/vulkan/features.gni")
+ import("//testing/test.gni")
+ import("//third_party/angle/gni/angle.gni")
+@@ -87,6 +88,7 @@ if (use_angle_stubs) {
+ }
+ 
+ component("gl") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "gl_wrapper"  # Avoid colliding with OS X"s libGL.dylib.
+ 
+   sources = [
+@@ -327,6 +329,18 @@ component("gl") {
+       "vsync_thread_win_dxgi.cc",
+       "vsync_thread_win_dxgi.h",
+     ]
++    if (current_os == "winuwp" && phone81_port) {
++      # The DirectComposition presenter needs the Windows 11 DirectComposition
++      # interfaces and only runs in a GPU process; the Phone build has none.
++      sources -= [
++        "dc_layer_tree.cc",
++        "dc_layer_tree.h",
++        "dcomp_presenter.cc",
++        "dcomp_presenter.h",
++        "swap_chain_presenter.cc",
++        "swap_chain_presenter.h",
++      ]
++    }
+ 
+     libs = [
+       "dcomp.lib",
+@@ -344,10 +358,12 @@ component("gl") {
        "//ui/gfx/mojom:dxgi_info",
      ]
  
@@ -22495,6 +22588,49 @@ index a89e6c2..4cb1924 100644
      if (!use_static_angle) {
        data_deps += [
          "//third_party/angle:libEGL",
+diff --git a/ui/gl/direct_composition_support.cc b/ui/gl/direct_composition_support.cc
+index 57ec9b6..4845058 100644
+--- a/ui/gl/direct_composition_support.cc
++++ b/ui/gl/direct_composition_support.cc
+@@ -17,7 +17,12 @@
+ #include "base/metrics/histogram_macros.h"
+ #include "base/synchronization/lock.h"
+ #include "base/win/windows_version.h"
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
++// Windows 11 DirectComposition texture interfaces; the Phone build never
++// creates a DirectComposition device (no GPU process).
+ #include "third_party/microsoft_dxheaders/src/include/experimental-composition/experimental-dcomp.h"
++#endif
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/win/d3d_shared_fence.h"
+ #include "ui/gl/gl_features.h"
+@@ -775,11 +780,13 @@ void InitializeDirectComposition(
+   GetSolidColorPoolFactoryRef() =
+       std::move(solid_color_content_provider_factory);
+ 
++#if !BASE_WIN_IS_PHONE_8_1
+   Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice6> dcomp_device6;
+   hr = g_dcomp_device->QueryInterface(IID_PPV_ARGS(&dcomp_device6));
+   if (SUCCEEDED(hr)) {
+     g_d3d12_command_queue = d3d12_command_queue.Detach();
+   }
++#endif
+ 
+   if (features::UseCompositorClockVSyncInterval()) {
+     using PFN_DXGI_DISABLE_VBLANK_VIRTUALIZATION = HRESULT(WINAPI*)();
+diff --git a/ui/gl/init/BUILD.gn b/ui/gl/init/BUILD.gn
+index 8ecd6bd..e9bb665 100644
+--- a/ui/gl/init/BUILD.gn
++++ b/ui/gl/init/BUILD.gn
+@@ -6,6 +6,7 @@ import("//build/config/ui.gni")
+ import("//ui/gl/features.gni")
+ 
+ component("init") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "gl_init"
+ 
+   public = [
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..b1c728a 100644
 --- a/v8/BUILD.gn

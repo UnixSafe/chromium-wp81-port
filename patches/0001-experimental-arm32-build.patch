@@ -4409,10 +4409,18 @@ index 797febf..520b966 100644
  };
  
 diff --git a/base/test/BUILD.gn b/base/test/BUILD.gn
-index 3167b4f..bbfc681 100644
+index 3167b4f..050c0c8 100644
 --- a/base/test/BUILD.gn
 +++ b/base/test/BUILD.gn
-@@ -124,6 +124,7 @@ group("test_support_rust") {
+@@ -5,6 +5,7 @@
+ import("//build/compiled_action.gni")
+ import("//build/config/features.gni")
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//build/rust/rust_static_library.gni")
+ import("//build/rust/rust_static_library.gni")
+ import("//build_overrides/build.gni")
+@@ -124,6 +125,7 @@ group("test_support_rust") {
  
  static_library("test_support") {
    testonly = true
@@ -4420,6 +4428,17 @@ index 3167b4f..bbfc681 100644
    sources = [
      "../memory/mock_memory_pressure_listener.cc",
      "../memory/mock_memory_pressure_listener.h",
+@@ -302,7 +304,9 @@ static_library("test_support") {
+   # problematic for Cronet because of targets like
+   #   //third_party/perfetto/src/trace_processor/perfetto_sql/stdlib:stdlib_generated_file
+   # that would require special support in gn2bp (AOSP Cronet).
+-  if (!is_cronet_build) {
++  # Windows Phone 8.1 has no use for the trace processor test library, which
++  # needs desktop-only Perfetto base code (subprocesses, mmap, getenv).
++  if (!is_cronet_build && !phone81_port) {
+     public_deps += [ "//third_party/perfetto:perfetto_test_support" ]
+     public_deps += [ ":test_trace_processor" ]
+     sources += [
 diff --git a/base/threading/platform_thread_metrics_win.cc b/base/threading/platform_thread_metrics_win.cc
 index e3ba14c..ccf1ee5 100644
 --- a/base/threading/platform_thread_metrics_win.cc
@@ -5738,7 +5757,7 @@ index bf28cd9..fc5b7d3 100644
           const _SYSTEM_INFO& system_info,
           DWORD os_type);
 diff --git a/build/config/BUILD.gn b/build/config/BUILD.gn
-index d2b2454..197cd60 100644
+index d2b2454..42aca12 100644
 --- a/build/config/BUILD.gn
 +++ b/build/config/BUILD.gn
 @@ -2,6 +2,7 @@
@@ -5749,7 +5768,7 @@ index d2b2454..197cd60 100644
  import("//build/config/c++/c++.gni")
  import("//build/config/cast.gni")
  import("//build/config/chrome_build.gni")
-@@ -151,7 +152,25 @@ config("release") {
+@@ -151,7 +152,30 @@ config("release") {
  
  # This config defines the default libraries applied to all targets.
  config("default_libs") {
@@ -5768,7 +5787,12 @@ index d2b2454..197cd60 100644
 +      "uuid.lib",
 +      "ws2_32.lib",
 +    ]
-+    ldflags = [ "/NODEFAULTLIB" ]
++    ldflags = [
++      "/NODEFAULTLIB",
++
++      # Report every undefined symbol: the port resolves them in batches.
++      "/errorlimit:0",
++    ]
 +    if (phone81_desktop_stub_lib_dir != "") {
 +      ldflags += [ "/LIBPATH:$phone81_desktop_stub_lib_dir" ]
 +    }
@@ -5776,7 +5800,7 @@ index d2b2454..197cd60 100644
      # TODO(brettw) this list of defaults should probably be smaller, and
      # instead the targets that use the less common ones (e.g. wininet or
      # winspool) should include those explicitly.
-@@ -288,6 +307,11 @@ group("common_deps") {
+@@ -288,6 +312,11 @@ group("common_deps") {
      public_deps += [ "//buildtools/third_party/libc++" ]
    }
  
@@ -5819,7 +5843,7 @@ index d339de7..68f2e66 100644
      rust_abi_target = "x86_64-pc-windows-msvc"
    } else if (current_cpu == "x86") {
 diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
-index 1edf103..c29b374 100644
+index 1edf103..8fdf5d4 100644
 --- a/build/config/win/BUILD.gn
 +++ b/build/config/win/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/compiler/compiler.gni")
@@ -5860,7 +5884,7 @@ index 1edf103..c29b374 100644
      } else if (target_winuwp_version == "8.0") {
        defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
      }
-@@ -303,16 +309,61 @@ config("runtime_library") {
+@@ -303,16 +309,65 @@ config("runtime_library") {
  # Some third-party libraries assume that these defines set what version of
  # Windows is available at runtime. Targets using these libraries need to
  # manually override this config for their compiles.
@@ -5895,10 +5919,14 @@ index 1edf103..c29b374 100644
 +                          root_build_dir),
 +    ]
 +    if (phone81_desktop_sdk_include != "") {
++      # /external:I directories are system headers searched before the Phone
++      # SDK's -imsvc directories, so these files see one consistent set of
++      # Windows 10 SDK declarations instead of Phone headers patched up with
++      # newer ones.
 +      cflags += [
-+        "-imsvc" + phone81_desktop_sdk_include + "/um",
-+        "-imsvc" + phone81_desktop_sdk_include + "/shared",
-+        "-imsvc" + phone81_desktop_sdk_include + "/winrt",
++        "/external:I" + phone81_desktop_sdk_include + "/um",
++        "/external:I" + phone81_desktop_sdk_include + "/shared",
++        "/external:I" + phone81_desktop_sdk_include + "/winrt",
 +      ]
 +    }
 +  }
@@ -5931,7 +5959,7 @@ index 1edf103..c29b374 100644
  }
  
  # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
-@@ -350,16 +401,19 @@ config("default_cfg_compiler") {
+@@ -350,16 +405,19 @@ config("default_cfg_compiler") {
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
    # The CFG guards are only emitted if |win_enable_cfg_guards| is enabled.
@@ -5960,7 +5988,7 @@ index 1edf103..c29b374 100644
    }
  }
  
-@@ -369,10 +423,12 @@ config("disable_guards_cfg_compiler") {
+@@ -369,10 +427,12 @@ config("disable_guards_cfg_compiler") {
    # Emit table of address-taken functions for Control-Flow Guard (CFG).
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
@@ -5976,7 +6004,7 @@ index 1edf103..c29b374 100644
  }
  
  config("cfi_linker") {
-@@ -383,7 +439,8 @@ config("cfi_linker") {
+@@ -383,7 +443,8 @@ config("cfi_linker") {
    # ASan and CFG leads to slow process startup. Chromium's test runner uses
    # lots of child processes, so this means things are really slow. Disable CFG
    # for now. https://crbug.com/846966
@@ -5986,7 +6014,7 @@ index 1edf103..c29b374 100644
      # Turn on CFG bitmap generation and CFG load config.
      ldflags = [ "/guard:cf" ]
    }
-@@ -647,9 +704,22 @@ config("static_crt") {
+@@ -647,9 +708,22 @@ config("static_crt") {
  # The number after the comma is the minimum required OS version.
  # Set to 10.0 since we only support >= Win10 since M110.
  subsystem_version_suffix = ",10.0"
@@ -7397,6 +7425,18 @@ index cdaacb6..c8c06df 100644
      tag_tool = ":tag_exe(//build/toolchain/win:win_clang_x64)"
    } else {
      tag_tool = ":tag_exe"
+diff --git a/components/autofill/core/browser/BUILD.gn b/components/autofill/core/browser/BUILD.gn
+index a11b566..3bee3ae 100644
+--- a/components/autofill/core/browser/BUILD.gn
++++ b/components/autofill/core/browser/BUILD.gn
+@@ -519,6 +519,7 @@ proto_library("amount_extraction_heuristic_regexes_proto") {
+ }
+ 
+ static_library("browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   _configs = configs
+   configs = []
+   configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
 diff --git a/components/crash/core/common/BUILD.gn b/components/crash/core/common/BUILD.gn
 index d3fdd11..d593df4 100644
 --- a/components/crash/core/common/BUILD.gn
@@ -7631,6 +7671,18 @@ index 533f1f2..090136b 100644
    sources = [
      "startup_metric_utils.cc",
      "startup_metric_utils.h",
+diff --git a/components/sync_device_info/BUILD.gn b/components/sync_device_info/BUILD.gn
+index 4183b4f..b5fcc03 100644
+--- a/components/sync_device_info/BUILD.gn
++++ b/components/sync_device_info/BUILD.gn
+@@ -9,6 +9,7 @@ if (is_android) {
+ }
+ 
+ static_library("sync_device_info") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "device_count_metrics_provider.cc",
+     "device_count_metrics_provider.h",
 diff --git a/components/system_cpu/BUILD.gn b/components/system_cpu/BUILD.gn
 index 8d4f59b..fc90349 100644
 --- a/components/system_cpu/BUILD.gn
@@ -7789,6 +7841,71 @@ index d495fce..2ddb905 100644
      platform = "windows"
    } else {
      platform = current_os
+diff --git a/components/viz/common/BUILD.gn b/components/viz/common/BUILD.gn
+index cf97a6d..586ceb7 100644
+--- a/components/viz/common/BUILD.gn
++++ b/components/viz/common/BUILD.gn
+@@ -25,6 +25,7 @@ buildflag_header("buildflags") {
+ }
+ 
+ viz_component("common") {
++  configs = [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "viz_common"
+ 
+   defines = [ "VIZ_COMMON_IMPLEMENTATION" ]
+diff --git a/components/viz/host/BUILD.gn b/components/viz/host/BUILD.gn
+index a95996a..070f6b3 100644
+--- a/components/viz/host/BUILD.gn
++++ b/components/viz/host/BUILD.gn
+@@ -6,6 +6,7 @@ import("//build/config/ui.gni")
+ import("//components/viz/viz.gni")
+ 
+ viz_component("host") {
++  configs = [ "//build/config/win:phone81_desktop_declarations" ]
+   defines = [ "VIZ_HOST_IMPLEMENTATION" ]
+ 
+   sources = [
+diff --git a/components/viz/service/BUILD.gn b/components/viz/service/BUILD.gn
+index 9f7515d..749f870 100644
+--- a/components/viz/service/BUILD.gn
++++ b/components/viz/service/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/ozone.gni")
++import("//build/config/win/phone81.gni")
+ import("//build/config/ui.gni")
+ import("//components/viz/viz.gni")
+ import("//components/vrp_flags/features.gni")
+@@ -286,7 +287,10 @@ viz_component("service") {
+ 
+   defines = [ "VIZ_SERVICE_IMPLEMENTATION" ]
+ 
+-  configs = [ "//build/config/compiler:wglobal_constructors" ]
++  configs = [
++    "//build/config/compiler:wglobal_constructors",
++    "//build/config/win:phone81_desktop_declarations",
++  ]
+ 
+   deps = [
+     "//build:chromecast_buildflags",
+@@ -497,6 +501,16 @@ viz_component("service") {
+       "gl/info_collection_gpu_service_impl.cc",
+       "gl/info_collection_gpu_service_impl.h",
+     ]
++    if (phone81_port) {
++      # Windows Phone 8.1 has no HWND or GDI to draw software frames into:
++      # OutputSurfaceProviderImpl keeps a plain SoftwareOutputDevice that the
++      # shell's CoreWindow presenter copies from.
++      sources -= [
++        "display_embedder/software_output_device_win.cc",
++        "display_embedder/software_output_device_win_base.cc",
++        "display_embedder/software_output_device_win_swapchain.cc",
++      ]
++    }
+ 
+     libs = [
+       "d3d11.lib",
 diff --git a/components/viz/service/display_embedder/output_surface_provider_impl.cc b/components/viz/service/display_embedder/output_surface_provider_impl.cc
 index c15bbfb..de87ccf 100644
 --- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
@@ -7860,8 +7977,28 @@ index 0b98a83..944def5 100644
    process_version_rc_template("zucchini_exe_version") {
      template_file = "zucchini_exe_version.rc.version"
      output = "$target_gen_dir/zucchini_exe_version.rc"
+diff --git a/content/app/BUILD.gn b/content/app/BUILD.gn
+index 822b769..bc888c5 100644
+--- a/content/app/BUILD.gn
++++ b/content/app/BUILD.gn
+@@ -58,6 +58,7 @@ if (is_ios && target_platform == "iphoneos") {
+ # in between browser and child. Otherwise it would require many "nogncheck"
+ # annotations that would both be useless and add noise.
+ source_set("content_main_runner_app") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ ":app" ]
+   check_includes = false
+ 
+@@ -87,6 +88,7 @@ source_set("content_main_runner_app") {
+ }
+ 
+ source_set("app") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # TODO(thakis): The comment above content_main_runner_app suggests this
+   # line shouldn't be here; try removing it.
+   check_includes = false
 diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
-index 0666c02..40bebd8 100644
+index 0666c02..f61b05f 100644
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/features.gni")
@@ -7872,7 +8009,15 @@ index 0666c02..40bebd8 100644
  import("//components/viz/common/debugger/viz_debugger.gni")
  import("//components/vrp_flags/features.gni")
  import("//content/browser/devtools/features.gni")
-@@ -3501,10 +3502,10 @@ source_set("browser") {
+@@ -111,6 +112,7 @@ if (is_ios) {
+ }
+ 
+ source_set("browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Only the public target should depend on this. All other targets (even
+   # internal content ones) should depend on the public one.
+   visibility = [
+@@ -3501,10 +3503,10 @@ source_set("browser") {
    }
  
    if (is_win) {
@@ -8133,6 +8278,41 @@ index 0e7f6d3..e0a7fd7 100644
    // Third-party payment bit checking in OS stores is not yet supported.
    // TODO(crbug.com/40868539): Support `require_third_party_payment_bit` by
    // checking for `bThirdPartyPayment` being present.
+diff --git a/content/browser/webauth/authenticator_test_base.cc b/content/browser/webauth/authenticator_test_base.cc
+index b2f1dbe..a449af9 100644
+--- a/content/browser/webauth/authenticator_test_base.cc
++++ b/content/browser/webauth/authenticator_test_base.cc
+@@ -407,7 +407,7 @@ void AuthenticatorTestBase::SetUp() {
+   chromeos::U2FClient::InitializeFake();
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   // Disable the Windows WebAuthn API integration by default. Individual tests
+   // can modify this.
+   fake_win_webauthn_api_.set_available(false);
+diff --git a/content/browser/webauth/authenticator_test_base.h b/content/browser/webauth/authenticator_test_base.h
+index 2a60c48..8ae42a0 100644
+--- a/content/browser/webauth/authenticator_test_base.h
++++ b/content/browser/webauth/authenticator_test_base.h
+@@ -19,7 +19,7 @@
+ #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
+ #include "url/origin.h"
+ 
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+ #include "device/fido/win/fake_webauthn_api.h"
+ #include "device/fido/win/util.h"
+ #endif
+@@ -372,7 +372,7 @@ class AuthenticatorTestBase : public RenderViewHostTestHarness {
+ 
+   raw_ptr<device::test::VirtualFidoDeviceFactory> virtual_device_factory_ =
+       nullptr;
+-#if BUILDFLAG(IS_WIN)
++#if (BUILDFLAG(IS_WIN) && !defined(FIDO_NO_WIN_WEBAUTHN))
+   device::FakeWinWebAuthnApi fake_win_webauthn_api_;
+   device::WinWebAuthnApi::ScopedOverride win_webauthn_api_override_{
+       &fake_win_webauthn_api_};
 diff --git a/content/browser/webauth/is_uvpaa.cc b/content/browser/webauth/is_uvpaa.cc
 index 7f8cc87..333f8fa 100644
 --- a/content/browser/webauth/is_uvpaa.cc
@@ -8181,8 +8361,56 @@ index 93a6d94..4330a90 100644
    std::unique_ptr<device::FidoDiscoveryBase>
    MaybeCreateWinWebAuthnApiDiscovery() override;
  #endif
+diff --git a/content/child/BUILD.gn b/content/child/BUILD.gn
+index 3bd2725..4973171 100644
+--- a/content/child/BUILD.gn
++++ b/content/child/BUILD.gn
+@@ -16,6 +16,7 @@ if (is_component_build) {
+ }
+ 
+ target(link_target_type, "child") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Targets external to content should always link to the public API.
+   # Internal targets can link to this but only if they're child processes
+   # (i.e. not content/browser or content/common) and only if they're inside the
+diff --git a/content/common/BUILD.gn b/content/common/BUILD.gn
+index 3339832..3dddd0a 100644
+--- a/content/common/BUILD.gn
++++ b/content/common/BUILD.gn
+@@ -58,6 +58,7 @@ if (is_linux || is_chromeos) {
+ }
+ 
+ source_set("common") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Targets external to content should always link to the public API.
+   # In addition, targets outside of the content component (shell and tests)
+   # must not link to this because it will duplicate the code in the component
+diff --git a/content/public/browser/BUILD.gn b/content/public/browser/BUILD.gn
+index 0851075..279c75d 100644
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -25,6 +25,7 @@ group("browser") {
+ }
+ 
+ source_set("browser_sources") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # External code should depend on via ":browser" above.
+   visibility = [ "//content/*" ]
+   sources = [
+diff --git a/content/renderer/BUILD.gn b/content/renderer/BUILD.gn
+index cf78814..9f82e97 100644
+--- a/content/renderer/BUILD.gn
++++ b/content/renderer/BUILD.gn
+@@ -21,6 +21,7 @@ if (is_component_build) {
+ }
+ 
+ target(link_target_type, "renderer") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Only the public target should depend on this. All other targets (even
+   # internal content ones) should depend on the public one.
+   visibility = [
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
-index 1afecb8..9606c94 100644
+index 1afecb8..15511e7 100644
 --- a/content/shell/BUILD.gn
 +++ b/content/shell/BUILD.gn
 @@ -8,6 +8,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -8233,7 +8461,15 @@ index 1afecb8..9606c94 100644
  }
  
  inspector_protocol_generate("protocol_sources") {
-@@ -390,7 +398,7 @@ static_library("content_shell_lib") {
+@@ -175,6 +183,7 @@ inspector_protocol_generate("protocol_sources") {
+ }
+ 
+ static_library("content_shell_lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "browser/protocol/browser_handler.cc",
+@@ -390,7 +399,7 @@ static_library("content_shell_lib") {
        "browser/fuchsia_view_presenter.h",
      ]
      deps += [ "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.element:fuchsia.element_hlcpp" ]
@@ -8242,7 +8478,7 @@ index 1afecb8..9606c94 100644
      deps += [
        "//components/crash/content/browser",
        "//components/crash/core/app",
-@@ -408,7 +416,7 @@ static_library("content_shell_lib") {
+@@ -408,7 +417,7 @@ static_library("content_shell_lib") {
      deps += [ "//media/mojo/services" ]
    }
  
@@ -8251,7 +8487,7 @@ index 1afecb8..9606c94 100644
      sources += [
        "common/v8_crashpad_support_win.cc",
        "common/v8_crashpad_support_win.h",
-@@ -454,6 +462,21 @@ static_library("content_shell_lib") {
+@@ -454,6 +463,21 @@ static_library("content_shell_lib") {
      deps += [ "//ui/views" ]
    }
  
@@ -8273,7 +8509,7 @@ index 1afecb8..9606c94 100644
    if (use_aura) {
      deps += [
        "//ui/aura",
-@@ -755,10 +778,14 @@ if (is_android) {
+@@ -755,10 +779,14 @@ if (is_android) {
    executable("content_shell") {
      testonly = true
  
@@ -8292,7 +8528,7 @@ index 1afecb8..9606c94 100644
      }
  
      defines = []
-@@ -767,11 +794,14 @@ if (is_android) {
+@@ -767,11 +795,14 @@ if (is_android) {
        ":content_shell_app",
        ":content_shell_lib",
        ":pak",
@@ -8308,7 +8544,7 @@ index 1afecb8..9606c94 100644
      data_deps = [
        ":pak",
        "//tools/v8_context_snapshot",
-@@ -782,7 +812,19 @@ if (is_android) {
+@@ -782,7 +813,19 @@ if (is_android) {
          "//base",
          "//sandbox",
        ]
@@ -8329,7 +8565,7 @@ index 1afecb8..9606c94 100644
          defines += [ "WIN_CONSOLE_APP" ]
        } else {
          # Set /SUBSYSTEM:WINDOWS unless a console build has been requested.
-@@ -791,14 +833,12 @@ if (is_android) {
+@@ -791,14 +834,12 @@ if (is_android) {
        }
  
        # Limit pre-loaded modules to improve sandbox coverage in content_shell.
@@ -9543,6 +9779,18 @@ index 907350d..d1b2f71 100644
  
  void ShellPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {}
  
+diff --git a/content/test/BUILD.gn b/content/test/BUILD.gn
+index 045d7fc..d3cd78c 100644
+--- a/content/test/BUILD.gn
++++ b/content/test/BUILD.gn
+@@ -75,6 +75,7 @@ static_library("setup_field_trials") {
+ # Use a static library here because many test binaries depend on this but don't
+ # require many files from it. This makes linking more efficient.
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+ 
+   # See comment at the top of //content/BUILD.gn for why this is disabled in
 diff --git a/content/utility/on_device_model/BUILD.gn b/content/utility/on_device_model/BUILD.gn
 index 7176313..901087a 100644
 --- a/content/utility/on_device_model/BUILD.gn
@@ -9628,6 +9876,30 @@ index 3502a0c..fbc924a 100644
      dawnProcSetProcs(&dawn::native::GetProcs());
      auto instance = std::make_unique<dawn::native::Instance>();
      const wgpu::RequestAdapterOptions adapter_options{
+diff --git a/content/utility/webnn/BUILD.gn b/content/utility/webnn/BUILD.gn
+index d07991b..2509fe5 100644
+--- a/content/utility/webnn/BUILD.gn
++++ b/content/utility/webnn/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ source_set("webnn_sandbox_init") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "webnn_sandbox_init.cc",
+     "webnn_sandbox_init.h",
+diff --git a/content/web_test/BUILD.gn b/content/web_test/BUILD.gn
+index 4c7895d..15f3512 100644
+--- a/content/web_test/BUILD.gn
++++ b/content/web_test/BUILD.gn
+@@ -65,6 +65,7 @@ static_library("web_test_common") {
+ }
+ 
+ static_library("web_test_browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+ 
+   # This is to support our dependency on //content/browser.
 diff --git a/crypto/BUILD.gn b/crypto/BUILD.gn
 index bb7c677..b990fe0 100644
 --- a/crypto/BUILD.gn
@@ -10182,6 +10454,82 @@ index 862a4cc..7b5fe46 100644
    std::unique_ptr<device::FidoDiscoveryBase>
    MaybeCreateWinWebAuthnApiDiscovery() override;
  #endif
+diff --git a/device/gamepad/BUILD.gn b/device/gamepad/BUILD.gn
+index 9741a1a..0c5fc8a 100644
+--- a/device/gamepad/BUILD.gn
++++ b/device/gamepad/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ 
+ if (is_android) {
+   import("//build/config/android/config.gni")
+@@ -11,6 +12,7 @@ if (is_android) {
+ }
+ 
+ component("gamepad") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "device_gamepad"
+ 
+   sources = [
+@@ -77,12 +79,22 @@ component("gamepad") {
+ 
+   defines = [ "DEVICE_GAMEPAD_IMPLEMENTATION" ]
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [
+       "gameinput_data_fetcher.cc",
+       "gameinput_data_fetcher.h",
+       "gameinput_gamepad_device.cc",
+       "gameinput_gamepad_device.h",
++    ]
++  }
++  if (is_win && phone81_port) {
++    # The GameInput SDK is a separate redistributable that does not exist
++    # for Windows Phone 8.1.
++    defines += [ "GAMEPAD_NO_GAMEINPUT" ]
++  }
++
++  if (is_win) {
++    sources += [
+       "gamepad_standard_mappings_win.cc",
+       "hid_writer_win.cc",
+       "hid_writer_win.h",
+diff --git a/device/gamepad/gamepad_platform_data_fetcher.h b/device/gamepad/gamepad_platform_data_fetcher.h
+index 254f349..ba58a08 100644
+--- a/device/gamepad/gamepad_platform_data_fetcher.h
++++ b/device/gamepad/gamepad_platform_data_fetcher.h
+@@ -20,7 +20,9 @@
+ #include "device/gamepad/gamepad_platform_data_fetcher_android.h"
+ #elif BUILDFLAG(IS_WIN)
+ #include "base/win/windows_version.h"
++#if !defined(GAMEPAD_NO_GAMEINPUT)
+ #include "device/gamepad/gameinput_data_fetcher.h"
++#endif
+ #include "device/gamepad/nintendo_data_fetcher.h"
+ #include "device/gamepad/raw_input_data_fetcher_win.h"
+ #include "device/gamepad/wgi_data_fetcher_win.h"
+@@ -45,6 +47,7 @@ void AddGamepadPlatformDataFetchers(GamepadDataFetcherManager* manager) {
+ 
+ #elif BUILDFLAG(IS_WIN)
+ 
++#if !defined(GAMEPAD_NO_GAMEINPUT)
+   if (base::win::GetVersion() >= base::win::Version::WIN11 &&
+       base::FeatureList::IsEnabled(
+           features::kEnableWindowsGameInputDataFetcher)) {
+@@ -52,6 +55,9 @@ void AddGamepadPlatformDataFetchers(GamepadDataFetcherManager* manager) {
+   } else {
+     manager->AddFactory(new WgiDataFetcherWin::Factory());
+   }
++#else
++  manager->AddFactory(new WgiDataFetcherWin::Factory());
++#endif
+   manager->AddFactory(new NintendoDataFetcher::Factory());
+   manager->AddFactory(new RawInputDataFetcher::Factory());
+ 
 diff --git a/gin/v8_initializer.cc b/gin/v8_initializer.cc
 index f63abad..2b70f55 100644
 --- a/gin/v8_initializer.cc
@@ -10238,6 +10586,38 @@ index 2f36e61..3e52441 100644
    visibility = [
      # TODO(blundell): Figure out how to sustainably restrict this to only being
      # visible to gpu_unittests. That target comes with a large number of
+diff --git a/gpu/command_buffer/service/BUILD.gn b/gpu/command_buffer/service/BUILD.gn
+index 914181b..84952c2 100644
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -109,6 +109,7 @@ if (is_win) {
+ }
+ 
+ target(link_target_type, "gles2_sources") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # External code should depend on this via //gpu/command_buffer/service:gles2
+   # above rather than depending on this directly or the component build will
+   # break.
+diff --git a/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
+index bd861c9..6c84e95 100644
+--- a/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
++++ b/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
+@@ -468,6 +468,7 @@ bool D3DImageBackingFactory::IsD3DSharedImageSupported(
+ bool D3DImageBackingFactory::IsSwapChainSupported(
+     const GpuPreferences& gpu_preferences,
+     DawnContextProvider* dawn_context_provider /*=nullptr*/) {
++#if BUILDFLAG(SKIA_USE_DAWN)
+   if (gpu_preferences.gr_context_type == GrContextType::kGraphiteDawn) {
+     // This is only supported if graphite and ANGLE share the same D3D11 device.
+     CHECK(dawn_context_provider);
+@@ -477,6 +478,7 @@ bool D3DImageBackingFactory::IsSwapChainSupported(
+       return false;
+     }
+   }
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
+ 
+   return gl::DirectCompositionSupported() &&
+          gl::DXGISwapChainTearingSupported();
 diff --git a/gpu/config/BUILD.gn b/gpu/config/BUILD.gn
 index d780ec1..5a38693 100644
 --- a/gpu/config/BUILD.gn
@@ -10280,11 +10660,194 @@ index 0473c21..f36ac09 100644
      case D3D_FEATURE_LEVEL_1_0_CORE:
        return gpu::mojom::Direct3DFeatureLevel::k1_0_Core;
      case D3D_FEATURE_LEVEL_9_1:
+diff --git a/gpu/ipc/service/BUILD.gn b/gpu/ipc/service/BUILD.gn
+index 86a6d23..38bf5d6 100644
+--- a/gpu/ipc/service/BUILD.gn
++++ b/gpu/ipc/service/BUILD.gn
+@@ -18,6 +18,7 @@ declare_args() {
+ }
+ 
+ component("service") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "gpu_ipc_service"
+   sources = [
+     "command_buffer_stub.cc",
+diff --git a/gpu/ipc/service/gpu_init.cc b/gpu/ipc/service/gpu_init.cc
+index 1c728a4..e48e018 100644
+--- a/gpu/ipc/service/gpu_init.cc
++++ b/gpu/ipc/service/gpu_init.cc
+@@ -744,8 +744,11 @@ bool GpuInitLegacy::InitializeAndStartSandbox(
+       //   SwiftShader via --skia-graphite-dawn-backend=swiftshader.
+       if (features::IsSwiftShaderAllowed(command_line) ||
+           gpu_preferences_.use_webgpu_adapter ==
+-              WebGPUAdapterName::kSwiftShader ||
+-          DawnContextProvider::DefaultForceFallbackAdapter()) {
++              WebGPUAdapterName::kSwiftShader
++#if BUILDFLAG(SKIA_USE_DAWN)
++          || DawnContextProvider::DefaultForceFallbackAdapter()
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
++      ) {
+         TRACE_EVENT("gpu,startup", "Load vk_swiftshader.dll");
+         base::LoadNativeLibrary(module_path.Append(L"vk_swiftshader.dll"),
+                                 nullptr);
+@@ -1005,10 +1008,10 @@ bool GpuInitLegacy::InitializeAndStartSandbox(
+     Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device;
+     Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue;
+     gl::SolidColorPoolFactory solid_color_factory;
++#if BUILDFLAG(SKIA_USE_DAWN)
+     if (dawn_context_provider_) {
+       d3d11_device = dawn_context_provider_->GetD3D11Device();
+       d3d12_command_queue = dawn_context_provider_->GetD3D12CommandQueue();
+-#if BUILDFLAG(SKIA_USE_DAWN)
+       // When Skia is on Graphite-D3D12, use Dawn (the same `wgpu::Device`
+       // and `ID3D12CommandQueue` Skia is using) to fill solid-color
+       // overlays.
+@@ -1017,8 +1020,9 @@ bool GpuInitLegacy::InitializeAndStartSandbox(
+         solid_color_factory = CreateDawnTextureSolidColorPoolFactory(
+             dawn_context_provider_->GetDevice(), d3d12_command_queue);
+       }
++    } else
+ #endif  // BUILDFLAG(SKIA_USE_DAWN)
+-    } else {
++    {
+       d3d11_device = gl::QueryD3D11DeviceObjectFromANGLE();
+     }
+     if (!solid_color_factory) {
+diff --git a/gpu/ipc/service/gpu_init_2.cc b/gpu/ipc/service/gpu_init_2.cc
+index d03146c..19092a8 100644
+--- a/gpu/ipc/service/gpu_init_2.cc
++++ b/gpu/ipc/service/gpu_init_2.cc
+@@ -506,7 +506,11 @@ bool GpuInit2::InitializeAndStartSandbox(
+   }
+ 
+ #if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(SKIA_USE_DAWN)
+   gpu_init_internal::InitializeDirectComposition(dawn_context_provider_.get());
++#else
++  gpu_init_internal::InitializeDirectComposition(nullptr);
++#endif
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+   InitializePlatformOverlaySettings(&gpu_info_, gpu_feature_info_);
+diff --git a/gpu/ipc/service/gpu_init_win.cc b/gpu/ipc/service/gpu_init_win.cc
+index d049a35..bcfe8ca 100644
+--- a/gpu/ipc/service/gpu_init_win.cc
++++ b/gpu/ipc/service/gpu_init_win.cc
+@@ -121,8 +121,11 @@ bool PreloadDLLs(const base::CommandLine* command_line,
+   // - DefaultForceFallbackAdapter() covers Graphite/Dawn using
+   //   SwiftShader via --skia-graphite-dawn-backend=swiftshader.
+   if (features::IsSwiftShaderAllowed(command_line) ||
+-      gpu_preferences.use_webgpu_adapter == WebGPUAdapterName::kSwiftShader ||
+-      DawnContextProvider::DefaultForceFallbackAdapter()) {
++      gpu_preferences.use_webgpu_adapter == WebGPUAdapterName::kSwiftShader
++#if BUILDFLAG(SKIA_USE_DAWN)
++      || DawnContextProvider::DefaultForceFallbackAdapter()
++#endif  // BUILDFLAG(SKIA_USE_DAWN)
++  ) {
+     TRACE_EVENT("gpu,startup", "Load vk_swiftshader.dll");
+     base::LoadNativeLibrary(module_path.Append(L"vk_swiftshader.dll"), nullptr);
+   }
+@@ -153,10 +156,10 @@ void InitializeDirectComposition(DawnContextProvider* dawn_context_provider) {
+   Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device;
+   Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue;
+   gl::SolidColorPoolFactory solid_color_factory;
++#if BUILDFLAG(SKIA_USE_DAWN)
+   if (dawn_context_provider) {
+     d3d11_device = dawn_context_provider->GetD3D11Device();
+     d3d12_command_queue = dawn_context_provider->GetD3D12CommandQueue();
+-#if BUILDFLAG(SKIA_USE_DAWN)
+     // When Skia is on Graphite-D3D12, use Dawn (the same `wgpu::Device`
+     // and `ID3D12CommandQueue` Skia is using) to fill solid-color
+     // overlays.
+@@ -165,8 +168,9 @@ void InitializeDirectComposition(DawnContextProvider* dawn_context_provider) {
+       solid_color_factory = CreateDawnTextureSolidColorPoolFactory(
+           dawn_context_provider->GetDevice(), d3d12_command_queue);
+     }
++  } else
+ #endif  // BUILDFLAG(SKIA_USE_DAWN)
+-  } else {
++  {
+     d3d11_device = gl::QueryD3D11DeviceObjectFromANGLE();
+   }
+   if (!solid_color_factory) {
+diff --git a/gpu/ipc/service/image_transport_surface_win.cc b/gpu/ipc/service/image_transport_surface_win.cc
+index 6840511..d4d2cb5 100644
+--- a/gpu/ipc/service/image_transport_surface_win.cc
++++ b/gpu/ipc/service/image_transport_surface_win.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <memory>
+ 
++#include "base/win/windows_phone_8_1.h"
+ #include "base/win/windows_version.h"
+ #include "gpu/config/gpu_driver_bug_workarounds.h"
+ #include "ui/gfx/native_ui_types.h"
+@@ -73,10 +74,20 @@ scoped_refptr<gl::GLSurface> ImageTransportSurface::CreateNativeGLSurface(
+   if (gl::GetGLImplementation() == gl::kGLImplementationEGLANGLE) {
+     // We always expect to succeed from |CreatePresenter| when DComp is enabled.
+     CHECK(!gl::DirectCompositionSupported());
++#if BASE_WIN_IS_PHONE_8_1
++    // On Windows Phone 8.1, ANGLE renders into a CoreWindow: the surface
++    // handle carries that window's IInspectable pointer, not an HWND, and
++    // there is no Win32 monitor to derive a VSync provider from.
++    surface = gl::InitializeGLSurface(
++        base::MakeRefCounted<gl::NativeViewGLSurfaceEGL>(
++            display->GetAs<gl::GLDisplayEGL>(),
++            reinterpret_cast<EGLNativeWindowType>(surface_handle), nullptr));
++#else
+     surface = gl::InitializeGLSurface(
+         base::MakeRefCounted<gl::NativeViewGLSurfaceEGL>(
+             display->GetAs<gl::GLDisplayEGL>(), surface_handle,
+             std::make_unique<gl::VSyncProviderWin>(surface_handle)));
++#endif
+     if (!surface) {
+       return nullptr;
+     }
+diff --git a/media/audio/BUILD.gn b/media/audio/BUILD.gn
+index 8c5e4e5..4b7e554 100644
+--- a/media/audio/BUILD.gn
++++ b/media/audio/BUILD.gn
+@@ -26,6 +26,7 @@ config("platform_config") {
+ }
+ 
+ source_set("audio") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
+diff --git a/media/base/BUILD.gn b/media/base/BUILD.gn
+index 64956f9..c33a3a1 100644
+--- a/media/base/BUILD.gn
++++ b/media/base/BUILD.gn
+@@ -14,6 +14,7 @@ if (is_android) {
+ }
+ 
+ source_set("base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
 diff --git a/media/base/win/BUILD.gn b/media/base/win/BUILD.gn
-index 9065d67..51493ee 100644
+index 9065d67..13b9061 100644
 --- a/media/base/win/BUILD.gn
 +++ b/media/base/win/BUILD.gn
-@@ -77,6 +77,7 @@ source_set("dcomp_texture_wrapper") {
+@@ -14,6 +14,7 @@ config("delay_load_mf") {
+ }
+ 
+ source_set("media_foundation_util") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "dxgi_device_manager.cc",
+     "dxgi_device_manager.h",
+@@ -46,6 +47,7 @@ source_set("media_foundation_util") {
+ }
+ 
+ component("color_space_util_win") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   defines = [ "IS_MEDIA_IMPL" ]
+   sources = [
+     "color_space_util_win.cc",
+@@ -77,6 +79,7 @@ source_set("dcomp_texture_wrapper") {
  }
  
  source_set("test_support") {
@@ -10292,6 +10855,79 @@ index 9065d67..51493ee 100644
    testonly = true
    sources = [
      "d3d11_mocks.cc",
+diff --git a/media/base/win/media_foundation_package_locator_helper.cc b/media/base/win/media_foundation_package_locator_helper.cc
+index 5e1806f..a89fbd8 100644
+--- a/media/base/win/media_foundation_package_locator_helper.cc
++++ b/media/base/win/media_foundation_package_locator_helper.cc
+@@ -21,6 +21,8 @@ constexpr std::array<std::wstring_view, 1> kArchSubDirs = {L"x64"};
+ constexpr std::array<std::wstring_view, 2> kArchSubDirs = {L"x86", L"win32"};
+ #elif defined(_M_ARM64)
+ constexpr std::array<std::wstring_view, 1> kArchSubDirs = {L"arm64"};
++#elif defined(_M_ARM)
++constexpr std::array<std::wstring_view, 1> kArchSubDirs = {L"arm"};
+ #else
+ #error Unsupported processor type.
+ #endif
+diff --git a/media/capture/BUILD.gn b/media/capture/BUILD.gn
+index 0800295..4c4d2c9 100644
+--- a/media/capture/BUILD.gn
++++ b/media/capture/BUILD.gn
+@@ -127,6 +127,7 @@ source_set("capture_device_specific") {
+ }
+ 
+ component("capture_lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   defines = [ "CAPTURE_IMPLEMENTATION" ]
+   sources = [
+     "video/create_video_capture_device_factory.cc",
+diff --git a/media/capture/video/win/BUILD.gn b/media/capture/video/win/BUILD.gn
+index bbff1cb..12d5b70 100644
+--- a/media/capture/video/win/BUILD.gn
++++ b/media/capture/video/win/BUILD.gn
+@@ -7,6 +7,7 @@ import("//media/media_options.gni")
+ import("//testing/test.gni")
+ 
+ source_set("win") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   defines = [ "CAPTURE_IMPLEMENTATION" ]
+   sources = [
+     "capability_list_win.cc",
+diff --git a/media/cdm/BUILD.gn b/media/cdm/BUILD.gn
+index 49c017b..df4a163 100644
+--- a/media/cdm/BUILD.gn
++++ b/media/cdm/BUILD.gn
+@@ -33,6 +33,7 @@ source_set("cdm_type_conversion") {
+ }
+ 
+ source_set("cdm") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
+diff --git a/media/device_monitors/BUILD.gn b/media/device_monitors/BUILD.gn
+index 8be9855..3172861 100644
+--- a/media/device_monitors/BUILD.gn
++++ b/media/device_monitors/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//media/media_options.gni")
+ 
+ source_set("device_monitors") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
+diff --git a/media/filters/BUILD.gn b/media/filters/BUILD.gn
+index de97105..b25af44 100644
+--- a/media/filters/BUILD.gn
++++ b/media/filters/BUILD.gn
+@@ -48,6 +48,7 @@ if (media_use_symphonia_demuxer) {
+ }
+ 
+ source_set("filters") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
 diff --git a/media/gpu/BUILD.gn b/media/gpu/BUILD.gn
 index 50a21ab..9bc8481 100644
 --- a/media/gpu/BUILD.gn
@@ -10385,8 +11021,20 @@ index 5b4e60b..bfaeb66 100644
    sources = [
      "message_util.cc",
      "message_util.h",
+diff --git a/media/mojo/clients/BUILD.gn b/media/mojo/clients/BUILD.gn
+index b0ccf8e..a8d3b04 100644
+--- a/media/mojo/clients/BUILD.gn
++++ b/media/mojo/clients/BUILD.gn
+@@ -6,6 +6,7 @@ import("//media/media_options.gni")
+ 
+ # Implementations of media C++ interfaces using corresponding mojo services.
+ source_set("clients") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":test_support",
+     "//chromecast/*",
 diff --git a/media/mojo/services/BUILD.gn b/media/mojo/services/BUILD.gn
-index 0ac893f..0820826 100644
+index 0ac893f..fe27dab 100644
 --- a/media/mojo/services/BUILD.gn
 +++ b/media/mojo/services/BUILD.gn
 @@ -3,6 +3,7 @@
@@ -10397,7 +11045,15 @@ index 0ac893f..0820826 100644
  import("//media/gpu/args.gni")
  import("//media/media_options.gni")
  import("//mojo/public/tools/fuzzers/mojolpm.gni")
-@@ -112,7 +113,7 @@ component("services") {
+@@ -12,6 +13,7 @@ enable_playback_events_recorder =
+     enable_cast_receiver && (is_fuchsia || is_android)
+ 
+ component("services") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "media_mojo_services"
+   sources = [
+     "deferred_destroy_unique_receiver_set.h",
+@@ -112,7 +114,7 @@ component("services") {
      sources += [ "gpu_mojo_media_client_android.cc" ]
    } else if (is_apple) {
      sources += [ "gpu_mojo_media_client_mac.cc" ]
@@ -10406,6 +11062,18 @@ index 0ac893f..0820826 100644
      sources += [ "gpu_mojo_media_client_win.cc" ]
    } else if (use_linux_video_acceleration) {
      if (is_linux) {
+diff --git a/media/renderers/BUILD.gn b/media/renderers/BUILD.gn
+index 35d1637..e605b0e 100644
+--- a/media/renderers/BUILD.gn
++++ b/media/renderers/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//media/media_options.gni")
+ 
+ source_set("renderers") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # Do not expand the visibility here without double-checking with OWNERS, this
+   # is a roll-up target which is part of the //media component. Most other DEPs
+   # should be using //media and not directly DEP this roll-up target.
 diff --git a/mojo/core/channel_win.cc b/mojo/core/channel_win.cc
 index cab73f5..70ffcfe 100644
 --- a/mojo/core/channel_win.cc
@@ -13288,7 +13956,7 @@ index 342597b..f0b2da5 100644
  
  bool QuicheIpAddress::IsIPv4() const {
 diff --git a/printing/BUILD.gn b/printing/BUILD.gn
-index 9aa693b..efc3306 100644
+index 9aa693b..62b5ee9 100644
 --- a/printing/BUILD.gn
 +++ b/printing/BUILD.gn
 @@ -35,6 +35,7 @@ config("strict") {
@@ -13299,6 +13967,22 @@ index 9aa693b..efc3306 100644
    sources = [
      "print_job_constants.cc",
      "print_job_constants.h",
+@@ -145,6 +146,7 @@ source_set("native_drawing_context") {
+ }
+ 
+ component("metafile") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "metafile.cc",
+     "metafile.h",
+@@ -194,6 +196,7 @@ component("metafile") {
+ }
+ 
+ component("printing") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "nup_parameters.cc",
+     "nup_parameters.h",
 diff --git a/printing/backend/BUILD.gn b/printing/backend/BUILD.gn
 index 165da66..b1ef3e4 100644
 --- a/printing/backend/BUILD.gn
@@ -13312,6 +13996,30 @@ index 165da66..b1ef3e4 100644
    # Avoid producing a very generic "backend.dll" or "libbackend.so".
    output_name = "printing_backend"
  
+diff --git a/printing/printing_context_win.cc b/printing/printing_context_win.cc
+index 8252622..eced92c 100644
+--- a/printing/printing_context_win.cc
++++ b/printing/printing_context_win.cc
+@@ -397,7 +397,9 @@ mojom::ResultCode PrintingContextWin::RenderPage(const PrintedPage& page,
+   // Save the state to make sure the context this function call does not modify
+   // the device context.
+   ScopedSavedState saved_state(context_);
++#if !BASE_WIN_IS_PHONE_8_1  // skia/ext has no GDI helpers on Windows Phone 8.1.
+   skia::InitializeDC(context_);
++#endif
+   {
+     // Save the state (again) to apply the necessary world transformation.
+     ScopedSavedState saved_state_inner(context_);
+@@ -485,7 +487,9 @@ mojom::ResultCode PrintingContextWin::InitializeSettings(
+   if (!context_)
+     return OnError();
+ 
++#if !BASE_WIN_IS_PHONE_8_1  // skia/ext has no GDI helpers on Windows Phone 8.1.
+   skia::InitializeDC(context_);
++#endif
+ 
+   DCHECK(!in_print_job_);
+   settings_->set_device_name(base::WideToUTF16(device_name));
 diff --git a/sandbox/policy/BUILD.gn b/sandbox/policy/BUILD.gn
 index 4af7b9f..69cb65b 100644
 --- a/sandbox/policy/BUILD.gn
@@ -13527,6 +14235,19 @@ index 619ea1a..8ea1855 100644
  }
  
  test("sbox_integration_tests") {
+diff --git a/sandbox/win/src/sandbox_nt_util.h b/sandbox/win/src/sandbox_nt_util.h
+index 55bae72..47e01d8 100644
+--- a/sandbox/win/src/sandbox_nt_util.h
++++ b/sandbox/win/src/sandbox_nt_util.h
+@@ -69,7 +69,7 @@ namespace sandbox {
+ #pragma intrinsic(_InterlockedCompareExchange)
+ #pragma intrinsic(_InterlockedCompareExchangePointer)
+ 
+-#elif defined(_M_IX86)
++#elif defined(_M_IX86) || defined(_M_ARM)
+ extern "C" long _InterlockedCompareExchange(long volatile* destination,
+                                             long exchange,
+                                             long comperand);
 diff --git a/sandbox/win/src/sandbox_phone.cc b/sandbox/win/src/sandbox_phone.cc
 new file mode 100644
 index 0000000..14cba71
@@ -13872,6 +14593,18 @@ index c1a5250..70b7538 100644
    sources = [
      "client_process_impl.cc",
      "client_process_impl.h",
+diff --git a/services/shape_detection/BUILD.gn b/services/shape_detection/BUILD.gn
+index a6c5bcc..456ad10 100644
+--- a/services/shape_detection/BUILD.gn
++++ b/services/shape_detection/BUILD.gn
+@@ -11,6 +11,7 @@ source_set("api") {
+ }
+ 
+ source_set("lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "shape_detection_service.cc",
+     "shape_detection_service.h",
 diff --git a/services/test/echo/BUILD.gn b/services/test/echo/BUILD.gn
 index 7666619..809c0da 100644
 --- a/services/test/echo/BUILD.gn
@@ -14025,6 +14758,61 @@ index 81c71cf..053b099 100644
  
    auto& startup_config = TraceStartupConfig::GetInstance();
  
+diff --git a/services/video_capture/BUILD.gn b/services/video_capture/BUILD.gn
+index a8d3d47..5b85618 100644
+--- a/services/video_capture/BUILD.gn
++++ b/services/video_capture/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//testing/test.gni")
+ 
+ source_set("lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "broadcasting_receiver.cc",
+     "broadcasting_receiver.h",
+diff --git a/services/webnn/BUILD.gn b/services/webnn/BUILD.gn
+index e295ed4..d1d868a 100644
+--- a/services/webnn/BUILD.gn
++++ b/services/webnn/BUILD.gn
+@@ -33,6 +33,7 @@ source_set("webnn_switches") {
+ }
+ 
+ source_set("webnn_service_base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ ":*" ]
+ 
+   sources = [
+@@ -114,6 +115,7 @@ if (webnn_use_tflite || webnn_use_litert) {
+ }
+ 
+ component("webnn_service") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   _configs = configs
+   configs = []
+   configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
+@@ -249,6 +251,10 @@ component("webnn_service") {
+     ]
+     deps += [
+       "//services/webnn/public/cpp:win",
++
++      # graph_builder_ort.cc uses fp16 directly; the TFLite deps otherwise
++      # provide it.
++      "//third_party/fp16",
+       "//third_party/windows_app_sdk_headers",
+     ]
+ 
+diff --git a/services/webnn/host/BUILD.gn b/services/webnn/host/BUILD.gn
+index 5a53480..55a716c 100644
+--- a/services/webnn/host/BUILD.gn
++++ b/services/webnn/host/BUILD.gn
+@@ -7,6 +7,7 @@
+ # giving each its own copy of this target's process-wide singletons. A
+ # component keeps a single shared copy.
+ component("host") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "weights_file_creator_impl.cc",
+     "weights_file_creator_impl.h",
 diff --git a/services/webnn/public/cpp/BUILD.gn b/services/webnn/public/cpp/BUILD.gn
 index 91d8f4c..6bcce1a 100644
 --- a/services/webnn/public/cpp/BUILD.gn
@@ -14098,6 +14886,36 @@ index 77769ef..3a9105c 100644
  #include "base/component_export.h"
  #include "base/files/file_path.h"
  #include "base/strings/cstring_view.h"
+diff --git a/services/webnn/public/mojom/package_version_mojom_traits.h b/services/webnn/public/mojom/package_version_mojom_traits.h
+index c32536d..8a42eb6 100644
+--- a/services/webnn/public/mojom/package_version_mojom_traits.h
++++ b/services/webnn/public/mojom/package_version_mojom_traits.h
+@@ -9,6 +9,25 @@
+ 
+ #include <appmodel.h>
+ 
++#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++// Windows Phone 8.1's appmodel.h declares PACKAGE_VERSION for desktop apps
++// only. Declare the same structure (same packing) so that the typemap
++// compiles; WebNN execution providers are never installed on Phone.
++#pragma pack(push, 4)
++typedef struct PACKAGE_VERSION {
++  union {
++    UINT64 Version;
++    struct {
++      USHORT Revision;
++      USHORT Build;
++      USHORT Minor;
++      USHORT Major;
++    } DUMMYSTRUCTNAME;
++  } DUMMYUNIONNAME;
++} PACKAGE_VERSION;
++#pragma pack(pop)
++#endif
++
+ #include "base/component_export.h"
+ #include "mojo/public/cpp/bindings/struct_traits.h"
+ #include "services/webnn/public/mojom/ep_package_info.mojom-shared.h"
 diff --git a/skia/BUILD.gn b/skia/BUILD.gn
 index 773cc9c..15c9e49 100644
 --- a/skia/BUILD.gn
@@ -14336,6 +15154,18 @@ index 1ae8d67..3a5f2dc 100644
  // Creates a surface writing to the pixels backing |context|'s bitmap.
  // Returns null on error.
  SK_API sk_sp<SkSurface> MapPlatformSurface(HDC context);
+diff --git a/storage/browser/BUILD.gn b/storage/browser/BUILD.gn
+index ee111c4..49e29b4 100644
+--- a/storage/browser/BUILD.gn
++++ b/storage/browser/BUILD.gn
+@@ -5,6 +5,7 @@ import("//mojo/public/tools/bindings/mojom.gni")
+ import("//testing/test.gni")
+ 
+ component("browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "storage_browser"
+   sources = [
+     "blob/blob_builder_from_stream.cc",
 diff --git a/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc b/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc
 index 3887a92..f6ecc5f 100644
 --- a/third_party/abseil-cpp/absl/base/internal/low_level_alloc.cc
@@ -14673,6 +15503,23 @@ index 5e8714b..7debae9 100644
      public_deps += [ "src/libANGLE/renderer/d3d:angle_enable_winuwp" ]
    }
  
+diff --git a/third_party/angle/include/EGL/eglplatform.h b/third_party/angle/include/EGL/eglplatform.h
+index 101fd74..308a6f7 100644
+--- a/third_party/angle/include/EGL/eglplatform.h
++++ b/third_party/angle/include/EGL/eglplatform.h
+@@ -63,7 +63,11 @@ typedef void *EGLNativeWindowType;
+ typedef HDC     EGLNativeDisplayType;
+ typedef HBITMAP EGLNativePixmapType;
+ 
+-#if !defined(WINAPI_FAMILY) || (WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP) /* Windows Desktop */
++/* CHROMIUM_PHONE81_DESKTOP_DECLARATIONS: a Windows Phone 8.1 file compiled
++ * with desktop declarations keeps the Store window type, so that every file
++ * of the Phone build agrees on the EGL ABI. */
++#if (!defined(WINAPI_FAMILY) || (WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP)) && \
++    !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS) /* Windows Desktop */
+ typedef HWND    EGLNativeWindowType;
+ #else /* Windows Store */
+ #include <inspectable.h>
 diff --git a/third_party/angle/src/common/system_utils_win.cpp b/third_party/angle/src/common/system_utils_win.cpp
 index 74e9ed8..7a19288 100644
 --- a/third_party/angle/src/common/system_utils_win.cpp
@@ -14842,6 +15689,139 @@ index 465928c..55c4efe 100644
  #    include <wrl/wrappers/corewrappers.h>
  #endif
  
+diff --git a/third_party/blink/renderer/controller/BUILD.gn b/third_party/blink/renderer/controller/BUILD.gn
+index 1fe5b0d..1f7a5cf 100644
+--- a/third_party/blink/renderer/controller/BUILD.gn
++++ b/third_party/blink/renderer/controller/BUILD.gn
+@@ -19,6 +19,7 @@ visibility = [
+ ]
+ 
+ component("controller") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "blink_controller"
+ 
+   deps = [
+diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
+index bf9c2c4..345c502 100644
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -255,6 +255,7 @@ rust_static_library("xml_ffi") {
+ }
+ 
+ component("core") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "blink_core"
+ 
+   visibility = []  # Allow re-assignment of list.
+diff --git a/third_party/blink/renderer/modules/mediarecorder/BUILD.gn b/third_party/blink/renderer/modules/mediarecorder/BUILD.gn
+index f1658bc..7981452 100644
+--- a/third_party/blink/renderer/modules/mediarecorder/BUILD.gn
++++ b/third_party/blink/renderer/modules/mediarecorder/BUILD.gn
+@@ -7,6 +7,7 @@ import("//media/media_options.gni")
+ import("//third_party/blink/renderer/modules/modules.gni")
+ 
+ blink_modules_sources("mediarecorder") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "audio_track_encoder.cc",
+     "audio_track_encoder.h",
+diff --git a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/renderer/platform/BUILD.gn
+index cab74e3..dd69a32 100644
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -430,6 +430,7 @@ source_set("image_headers") {
+ }
+ 
+ component("platform") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = []  # Allow re-assignment of list.
+   visibility = [ "//third_party/blink/*" ]
+   output_name = "blink_platform"
+diff --git a/third_party/blink/renderer/platform/instrumentation/BUILD.gn b/third_party/blink/renderer/platform/instrumentation/BUILD.gn
+index 41b4844..538e66a 100644
+--- a/third_party/blink/renderer/platform/instrumentation/BUILD.gn
++++ b/third_party/blink/renderer/platform/instrumentation/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//third_party/blink/renderer/platform/platform.gni")
+ 
+ blink_platform_sources("instrumentation") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "canvas_memory_dump_provider.cc",
+     "canvas_memory_dump_provider.h",
+diff --git a/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc b/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
+index 5bc5226..e5c390c 100644
+--- a/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
++++ b/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
+@@ -8,6 +8,7 @@
+ #include "base/strings/stringprintf.h"
+ #include "base/trace_event/malloc_dump_provider.h"
+ #include "base/trace_event/process_memory_dump.h"
++#include "partition_alloc/buildflags.h"
+ #include "partition_alloc/partition_alloc.h"
+ #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+@@ -24,6 +25,11 @@ PartitionAllocMemoryDumpProvider* PartitionAllocMemoryDumpProvider::Instance() {
+ bool PartitionAllocMemoryDumpProvider::OnMemoryDump(
+     const base::trace_event::MemoryDumpArgs& args,
+     base::trace_event::ProcessMemoryDump* memory_dump) {
++#if !PA_BUILDFLAG(USE_PARTITION_ALLOC)
++  // base's stats dumper only exists when PartitionAlloc is the allocator
++  // (it is disabled on Windows Phone 8.1); report nothing.
++  return true;
++#else
+   using base::trace_event::MemoryDumpLevelOfDetail;
+ 
+   MemoryDumpLevelOfDetail level_of_detail = args.level_of_detail;
+@@ -50,6 +56,7 @@ bool PartitionAllocMemoryDumpProvider::OnMemoryDump(
+                                 partitions_dump->guid());
+ 
+   return true;
++#endif  // !PA_BUILDFLAG(USE_PARTITION_ALLOC)
+ }
+ 
+ PartitionAllocMemoryDumpProvider::PartitionAllocMemoryDumpProvider() = default;
+diff --git a/third_party/blink/renderer/platform/scheduler/BUILD.gn b/third_party/blink/renderer/platform/scheduler/BUILD.gn
+index a3e888b..7e39ef9 100644
+--- a/third_party/blink/renderer/platform/scheduler/BUILD.gn
++++ b/third_party/blink/renderer/platform/scheduler/BUILD.gn
+@@ -11,6 +11,7 @@ if (is_android) {
+ }
+ 
+ blink_platform_sources("scheduler") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "common/auto_advancing_virtual_time_domain.cc",
+     "common/auto_advancing_virtual_time_domain.h",
+diff --git a/third_party/blink/renderer/platform/wtf/stack_util.cc b/third_party/blink/renderer/platform/wtf/stack_util.cc
+index 975302f..fa8bb8d 100644
+--- a/third_party/blink/renderer/platform/wtf/stack_util.cc
++++ b/third_party/blink/renderer/platform/wtf/stack_util.cc
+@@ -18,6 +18,14 @@
+ #include <intrin.h>
+ #include <stddef.h>
+ #include <winnt.h>
++
++#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++// Exported by Windows Phone 8.1 (WindowsPhoneCore.lib) but declared by the
++// Phone SDK for desktop applications only.
++extern "C" __declspec(dllimport) void __stdcall GetCurrentThreadStackLimits(
++    PULONG_PTR low_limit,
++    PULONG_PTR high_limit);
++#endif
+ #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+ #include <pthread.h>
+ #if defined(__GLIBC__)
+@@ -199,7 +207,8 @@ void* GetStackStartImpl() {
+ #elif defined(ARCH_CPU_X86)
+   return reinterpret_cast<void*>(
+       reinterpret_cast<NT_TIB*>(NtCurrentTeb())->StackBase);
+-#elif defined(ARCH_CPU_ARM64)
++#elif defined(ARCH_CPU_ARM_FAMILY)
++  // Windows Phone 8.1 (ARMv7) also exports GetCurrentThreadStackLimits.
+   ULONG_PTR low_limit, high_limit;
+   ::GetCurrentThreadStackLimits(&low_limit, &high_limit);
+   return reinterpret_cast<void*>(high_limit);
 diff --git a/third_party/boringssl/BUILD.gn b/third_party/boringssl/BUILD.gn
 index f4e51bf..932b3aa 100644
 --- a/third_party/boringssl/BUILD.gn
@@ -15335,7 +16315,7 @@ index 79b728d..242de80 100644
  // Referenced from base/win/registry.cc in Chromium
  std::optional<DWORD> ReadFromDWORDRegistryKey(HKEY registerKey, const char* registerKeyName) {
 diff --git a/third_party/dawn/src/dawn/wire/BUILD.gn b/third_party/dawn/src/dawn/wire/BUILD.gn
-index cbe5dc7..cad66c7 100644
+index cbe5dc7..f78d3ca 100644
 --- a/third_party/dawn/src/dawn/wire/BUILD.gn
 +++ b/third_party/dawn/src/dawn/wire/BUILD.gn
 @@ -29,6 +29,11 @@ import("../../../scripts/dawn_overrides_with_defaults.gni")
@@ -15376,7 +16356,11 @@ index cbe5dc7..cad66c7 100644
  
    configs += [ "${dawn_root}/src/dawn/common:internal_config" ]
    sources = filter_include(get_target_outputs(":gen"), [ "*/client/*" ])
-@@ -189,8 +200,10 @@ source_set("server_sources") {
+@@ -186,11 +197,14 @@ source_set("client_sources") {
+ }
+ 
+ source_set("server_sources") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
    deps = [
      ":gen",
      "${dawn_root}/src/dawn/common",
@@ -24314,6 +25298,30 @@ index f353476..7de9bb8 100644
      data_deps += [ "//third_party/perfetto/src/trace_processor:trace_processor_shell($default_toolchain)" ]
    }
  
+diff --git a/ui/accessibility/platform/BUILD.gn b/ui/accessibility/platform/BUILD.gn
+index 7361f52..6e78b71 100644
+--- a/ui/accessibility/platform/BUILD.gn
++++ b/ui/accessibility/platform/BUILD.gn
+@@ -27,6 +27,7 @@ if (is_android) {
+ }
+ 
+ component("platform") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "accessibility_platform"
+ 
+   defines = [ "IS_AX_PLATFORM_IMPL" ]
+diff --git a/ui/aura/BUILD.gn b/ui/aura/BUILD.gn
+index 31fcf90..f41313c 100644
+--- a/ui/aura/BUILD.gn
++++ b/ui/aura/BUILD.gn
+@@ -6,6 +6,7 @@ import("//build/config/ui.gni")
+ import("//testing/test.gni")
+ 
+ component("aura") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   public = [
+     "client/aura_constants.h",
+     "client/capture_client.h",
 diff --git a/ui/base/BUILD.gn b/ui/base/BUILD.gn
 index d49ede6..aaaabbf 100644
 --- a/ui/base/BUILD.gn
@@ -24580,6 +25588,18 @@ index ee30b95..e0cd932 100644
  void AddNativeUiColorMixer(ColorProvider* provider,
                             const ColorProviderKey& key) {}
  #endif
+diff --git a/ui/compositor/BUILD.gn b/ui/compositor/BUILD.gn
+index fd1a3df..91a3164 100644
+--- a/ui/compositor/BUILD.gn
++++ b/ui/compositor/BUILD.gn
+@@ -157,6 +157,7 @@ component("compositor") {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "test/begin_main_frame_waiter.cc",
 diff --git a/ui/display/BUILD.gn b/ui/display/BUILD.gn
 index 6f419c1..5a88860 100644
 --- a/ui/display/BUILD.gn
@@ -24736,6 +25756,18 @@ index cc26741..6af92dc 100644
    sources = [
      "test/event_generator.cc",
      "test/event_generator.h",
+diff --git a/ui/events/blink/BUILD.gn b/ui/events/blink/BUILD.gn
+index 82effa0..e10cf08 100644
+--- a/ui/events/blink/BUILD.gn
++++ b/ui/events/blink/BUILD.gn
+@@ -16,6 +16,7 @@ component("blink_features") {
+ }
+ 
+ source_set("blink") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "blink_event_util.cc",
+     "blink_event_util.h",
 diff --git a/ui/gfx/BUILD.gn b/ui/gfx/BUILD.gn
 index 6275eea..763becd 100644
 --- a/ui/gfx/BUILD.gn
@@ -25615,6 +26647,32 @@ index 57ec9b6..4845058 100644
  
    if (features::UseCompositorClockVSyncInterval()) {
      using PFN_DXGI_DISABLE_VBLANK_VIRTUALIZATION = HRESULT(WINAPI*)();
+diff --git a/ui/gl/gl_surface_egl.cc b/ui/gl/gl_surface_egl.cc
+index 6f03a4e..bb551c3 100644
+--- a/ui/gl/gl_surface_egl.cc
++++ b/ui/gl/gl_surface_egl.cc
+@@ -25,6 +25,10 @@
+ #include "base/system/sys_info.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#endif
+ #include "third_party/perfetto/include/perfetto/tracing/track.h"
+ #include "ui/events/platform/platform_event_dispatcher.h"
+ #include "ui/gfx/geometry/rect.h"
+@@ -329,7 +333,9 @@ NativeViewGLSurfaceEGL::NativeViewGLSurfaceEGL(
+     : GLSurfaceEGL(display),
+       window_(window),
+       vsync_provider_external_(std::move(vsync_provider)) {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
++  // On Windows Phone 8.1 the window is a CoreWindow (IInspectable*); its size
++  // arrives through Resize().
+   RECT windowRect;
+   if (GetClientRect(window_, &windowRect)) {
+     size_ = gfx::Rect(windowRect).size();
 diff --git a/ui/gl/init/BUILD.gn b/ui/gl/init/BUILD.gn
 index 8ecd6bd..e9bb665 100644
 --- a/ui/gl/init/BUILD.gn
@@ -25627,6 +26685,36 @@ index 8ecd6bd..e9bb665 100644
    output_name = "gl_init"
  
    public = [
+diff --git a/ui/gl/init/gl_factory_win.cc b/ui/gl/init/gl_factory_win.cc
+index 8e0cd3a..d6f7414 100644
+--- a/ui/gl/init/gl_factory_win.cc
++++ b/ui/gl/init/gl_factory_win.cc
+@@ -7,6 +7,7 @@
+ #include "base/check_op.h"
+ #include "base/notreached.h"
+ #include "base/trace_event/trace_event.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "ui/gl/gl_context.h"
+ #include "ui/gl/gl_context_egl.h"
+ #include "ui/gl/gl_context_stub.h"
+@@ -71,9 +72,17 @@ scoped_refptr<GLSurface> CreateViewGLSurface(GLDisplay* display,
+   switch (GetGLImplementation()) {
+     case kGLImplementationEGLANGLE: {
+       DCHECK_NE(window, gfx::kNullAcceleratedWidget);
++#if BASE_WIN_IS_PHONE_8_1
++      // The Phone accelerated widget carries a CoreWindow's IInspectable
++      // pointer; there is no Win32 monitor for a VSync provider.
++      return InitializeGLSurface(base::MakeRefCounted<NativeViewGLSurfaceEGL>(
++          display->GetAs<gl::GLDisplayEGL>(),
++          reinterpret_cast<EGLNativeWindowType>(window), nullptr));
++#else
+       return InitializeGLSurface(base::MakeRefCounted<NativeViewGLSurfaceEGL>(
+           display->GetAs<gl::GLDisplayEGL>(), window,
+           std::make_unique<VSyncProviderWin>(window)));
++#endif
+     }
+     case kGLImplementationMockGL:
+     case kGLImplementationStubGL:
 diff --git a/ui/native_theme/BUILD.gn b/ui/native_theme/BUILD.gn
 index 25db8fc..6e1a48d 100644
 --- a/ui/native_theme/BUILD.gn
@@ -25763,6 +26851,54 @@ index f5f6cb1..28c016c 100644
    output_name = "win_window"
  
    deps = [
+diff --git a/ui/shell_dialogs/BUILD.gn b/ui/shell_dialogs/BUILD.gn
+index 088708f..cede1ad 100644
+--- a/ui/shell_dialogs/BUILD.gn
++++ b/ui/shell_dialogs/BUILD.gn
+@@ -17,6 +17,7 @@ if (is_ios) {
+ }
+ 
+ component("shell_dialogs") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "base_shell_dialog.cc",
+     "base_shell_dialog.h",
+diff --git a/ui/snapshot/BUILD.gn b/ui/snapshot/BUILD.gn
+index e9dbc8b..7ec6504 100644
+--- a/ui/snapshot/BUILD.gn
++++ b/ui/snapshot/BUILD.gn
+@@ -6,6 +6,7 @@ import("//build/config/ui.gni")
+ import("//testing/test.gni")
+ 
+ component("snapshot") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "screenshot_grabber.cc",
+     "screenshot_grabber.h",
+diff --git a/ui/views/BUILD.gn b/ui/views/BUILD.gn
+index a24f7f2..b116ec6 100644
+--- a/ui/views/BUILD.gn
++++ b/ui/views/BUILD.gn
+@@ -105,6 +105,7 @@ buildflag_header("buildflags") {
+ }
+ 
+ component("views") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   all_dependent_configs = [ ":flags" ]
+ 
+   public = [
+diff --git a/ui/wm/BUILD.gn b/ui/wm/BUILD.gn
+index 2815512..3fcb454 100644
+--- a/ui/wm/BUILD.gn
++++ b/ui/wm/BUILD.gn
+@@ -9,6 +9,7 @@ import("//ui/base/ui_features.gni")
+ assert(use_aura)
+ 
+ component("wm") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_wm"
+   sources = [
+     "core/accelerator_delegate.h",
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..b1c728a 100644
 --- a/v8/BUILD.gn

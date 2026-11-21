@@ -32,7 +32,8 @@ def main():
             continue
         text = build.read_text()
         decl = re.search(
-            r'^(?P<indent>[ \t]*)[A-Za-z_][A-Za-z0-9_]*\("%s"\) \{\n' % re.escape(target),
+            r'^(?P<indent>[ \t]*)[A-Za-z_][A-Za-z0-9_]*\((?:[A-Za-z_][A-Za-z0-9_]*, )?"%s"\) \{\n'
+            % re.escape(target),
             text, re.M)
         if not decl:
             print(f"skip {d}:{target} (declaration not found)")

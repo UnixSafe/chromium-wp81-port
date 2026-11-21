@@ -4408,6 +4408,18 @@ index 797febf..520b966 100644
    std::unique_ptr<win::ScopedCOMInitializer> scoped_com_initializer_;
  };
  
+diff --git a/base/test/BUILD.gn b/base/test/BUILD.gn
+index 3167b4f..bbfc681 100644
+--- a/base/test/BUILD.gn
++++ b/base/test/BUILD.gn
+@@ -124,6 +124,7 @@ group("test_support_rust") {
+ 
+ static_library("test_support") {
+   testonly = true
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "../memory/mock_memory_pressure_listener.cc",
+     "../memory/mock_memory_pressure_listener.h",
 diff --git a/base/threading/platform_thread_metrics_win.cc b/base/threading/platform_thread_metrics_win.cc
 index e3ba14c..ccf1ee5 100644
 --- a/base/threading/platform_thread_metrics_win.cc
@@ -5756,7 +5768,7 @@ index d339de7..68f2e66 100644
      rust_abi_target = "x86_64-pc-windows-msvc"
    } else if (current_cpu == "x86") {
 diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
-index 1edf103..ee9a11e 100644
+index 1edf103..6e65f88 100644
 --- a/build/config/win/BUILD.gn
 +++ b/build/config/win/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/compiler/compiler.gni")
@@ -5797,7 +5809,7 @@ index 1edf103..ee9a11e 100644
      } else if (target_winuwp_version == "8.0") {
        defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
      }
-@@ -303,16 +309,59 @@ config("runtime_library") {
+@@ -303,16 +309,61 @@ config("runtime_library") {
  # Some third-party libraries assume that these defines set what version of
  # Windows is available at runtime. Targets using these libraries need to
  # manually override this config for their compiles.
@@ -5828,6 +5840,8 @@ index 1edf103..ee9a11e 100644
 +      "/DNTDDI_VERSION=0x0A000010",
 +      "/D_WIN32_WINNT=0x0A00",
 +      "/DWINVER=0x0A00",
++      "/FI" + rebase_path("//build/config/win/phone81_desktop_compat.h",
++                          root_build_dir),
 +    ]
 +    if (phone81_desktop_sdk_include != "") {
 +      cflags += [
@@ -5866,7 +5880,7 @@ index 1edf103..ee9a11e 100644
  }
  
  # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
-@@ -350,16 +399,19 @@ config("default_cfg_compiler") {
+@@ -350,16 +401,19 @@ config("default_cfg_compiler") {
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
    # The CFG guards are only emitted if |win_enable_cfg_guards| is enabled.
@@ -5895,7 +5909,7 @@ index 1edf103..ee9a11e 100644
    }
  }
  
-@@ -369,10 +421,12 @@ config("disable_guards_cfg_compiler") {
+@@ -369,10 +423,12 @@ config("disable_guards_cfg_compiler") {
    # Emit table of address-taken functions for Control-Flow Guard (CFG).
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
@@ -5911,7 +5925,7 @@ index 1edf103..ee9a11e 100644
  }
  
  config("cfi_linker") {
-@@ -383,7 +437,8 @@ config("cfi_linker") {
+@@ -383,7 +439,8 @@ config("cfi_linker") {
    # ASan and CFG leads to slow process startup. Chromium's test runner uses
    # lots of child processes, so this means things are really slow. Disable CFG
    # for now. https://crbug.com/846966
@@ -5941,6 +5955,96 @@ index 0000000..1a24019
 +  # um/ and shared/). Only used by phone81_desktop_declarations below.
 +  phone81_desktop_sdk_include = ""
 +}
+diff --git a/build/config/win/phone81_desktop_compat.h b/build/config/win/phone81_desktop_compat.h
+new file mode 100644
+index 0000000..0b8207d
+--- /dev/null
++++ b/build/config/win/phone81_desktop_compat.h
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Force-included by //build/config/win:phone81_desktop_declarations. The
++// Windows Phone 8.1 winnt.h predates macros that the Windows 10/11 "shared"
++// headers (ndis/*.h, ...) reached through the -imsvc fallback rely on.
++
++#ifndef BUILD_CONFIG_WIN_PHONE81_DESKTOP_COMPAT_H_
++#define BUILD_CONFIG_WIN_PHONE81_DESKTOP_COMPAT_H_
++
++#ifndef EXTERN_C_START
++#ifdef __cplusplus
++#define EXTERN_C_START extern "C" {
++#define EXTERN_C_END }
++#else
++#define EXTERN_C_START
++#define EXTERN_C_END
++#endif
++#endif
++
++// Windows 10 version constants used by the modern versionhelpers.h.
++#ifndef _WIN32_WINNT_WINTHRESHOLD
++#define _WIN32_WINNT_WINTHRESHOLD 0x0A00
++#endif
++#ifndef _WIN32_WINNT_WIN10
++#define _WIN32_WINNT_WIN10 0x0A00
++#endif
++
++// Windows 10/11 NTDDI constants (the Phone 8.1 sdkddkver.h stops at
++// NTDDI_WINBLUE); version-gated Windows 10/11 headers test them.
++#ifndef NTDDI_WIN10
++#define NTDDI_WIN10 0x0A000000
++#endif
++#ifndef NTDDI_WIN10_TH2
++#define NTDDI_WIN10_TH2 0x0A000001
++#endif
++#ifndef NTDDI_WIN10_RS1
++#define NTDDI_WIN10_RS1 0x0A000002
++#endif
++#ifndef NTDDI_WIN10_RS2
++#define NTDDI_WIN10_RS2 0x0A000003
++#endif
++#ifndef NTDDI_WIN10_RS3
++#define NTDDI_WIN10_RS3 0x0A000004
++#endif
++#ifndef NTDDI_WIN10_RS4
++#define NTDDI_WIN10_RS4 0x0A000005
++#endif
++#ifndef NTDDI_WIN10_RS5
++#define NTDDI_WIN10_RS5 0x0A000006
++#endif
++#ifndef NTDDI_WIN10_19H1
++#define NTDDI_WIN10_19H1 0x0A000007
++#endif
++#ifndef NTDDI_WIN10_VB
++#define NTDDI_WIN10_VB 0x0A000008
++#endif
++#ifndef NTDDI_WIN10_MN
++#define NTDDI_WIN10_MN 0x0A000009
++#endif
++#ifndef NTDDI_WIN10_FE
++#define NTDDI_WIN10_FE 0x0A00000A
++#endif
++#ifndef NTDDI_WIN10_CO
++#define NTDDI_WIN10_CO 0x0A00000B
++#endif
++#ifndef NTDDI_WIN10_NI
++#define NTDDI_WIN10_NI 0x0A00000C
++#endif
++#ifndef NTDDI_WIN10_CU
++#define NTDDI_WIN10_CU 0x0A00000D
++#endif
++#ifndef NTDDI_WIN10_ZN
++#define NTDDI_WIN10_ZN 0x0A00000E
++#endif
++#ifndef NTDDI_WIN10_GA
++#define NTDDI_WIN10_GA 0x0A00000F
++#endif
++#ifndef NTDDI_WIN10_GE
++#define NTDDI_WIN10_GE 0x0A000010
++#endif
++
++#endif  // BUILD_CONFIG_WIN_PHONE81_DESKTOP_COMPAT_H_
 diff --git a/build/nocompile.gni b/build/nocompile.gni
 index cb65827..1f3c5a0 100644
 --- a/build/nocompile.gni
@@ -5971,6 +6075,19 @@ index 616f552..f0a96ec 100644
  #else
  
  #define TRAP_SEQUENCE1_() asm volatile("int3")
+diff --git a/build/rust/known-target-triples.txt b/build/rust/known-target-triples.txt
+index fc4780b..604ece7 100644
+--- a/build/rust/known-target-triples.txt
++++ b/build/rust/known-target-triples.txt
+@@ -31,6 +31,8 @@ i686-unknown-linux-gnu
+ loongarch64-unknown-linux-gnu
+ riscv64-linux-android
+ riscv64gc-unknown-linux-gnu
++thumbv7a-pc-windows-msvc
++thumbv7a-uwp-windows-msvc
+ thumbv7neon-linux-androideabi
+ thumbv7neon-unknown-linux-gnueabihf
+ x86_64-apple-darwin
 diff --git a/build/toolchain/win/BUILD.gn b/build/toolchain/win/BUILD.gn
 index 860b6af..b3518ce 100644
 --- a/build/toolchain/win/BUILD.gn
@@ -6024,6 +6141,43 @@ index c906b63..2ba7aca 100644
      } else {
        assert(false, "Need environment for this arch")
      }
+diff --git a/build/toolchain/win/midl.py b/build/toolchain/win/midl.py
+index 370e5ad..444398e 100644
+--- a/build/toolchain/win/midl.py
++++ b/build/toolchain/win/midl.py
+@@ -363,6 +363,17 @@ def main(
+         source = os.path.join(source, os.path.basename(idl))
+     source = os.path.join(source, arch.split('.')[1])  # Append 'x86' or 'x64'.
+     source = os.path.normpath(source)
++    # No checked-in ARM32 (Windows Phone 8.1) outputs exist and MIDL cannot run
++    # off Windows. Reuse the 32-bit x86 outputs: the headers and IIDs are
++    # identical; the x86 proxy code is compiled but never used, since the
++    # Phone port has no out-of-process COM.
++    arm32_from_x86 = False
++    if (sys.platform != 'win32' and arch.split('.')[1] == 'arm'
++            and not os.path.isdir(source)):
++        x86_source = os.path.join(os.path.dirname(source), 'x86')
++        if os.path.isdir(x86_source):
++            source = x86_source
++            arm32_from_x86 = True
+ 
+     source_exists = True
+     if not os.path.isdir(source):
+@@ -416,6 +427,14 @@ def main(
+             # third_party\win_build_output\midl.
+             open(file_path, 'wb').close()
+         shutil.copy(file_path, outdir)
++        if arm32_from_x86 and source_file in (proxy, dlldata):
++            # The x86 proxy/dlldata sources exclude themselves on _ARM_.
++            copied = os.path.join(outdir, source_file)
++            with open(copied, 'rb') as f:
++                text = f.read()
++            text = text.replace(b' && !defined(_ARM_)', b'')
++            with open(copied, 'wb') as f:
++                f.write(text)
+ 
+     if dynamic_guids != 'none':
+         assert '=' in dynamic_guids
 diff --git a/build/toolchain/win/setup_toolchain.py b/build/toolchain/win/setup_toolchain.py
 index 34be00a..3799c7e 100644
 --- a/build/toolchain/win/setup_toolchain.py
@@ -6291,6 +6445,142 @@ index d3fdd11..d593df4 100644
  }
  
  group("common") {
+diff --git a/components/os_crypt/async/browser/BUILD.gn b/components/os_crypt/async/browser/BUILD.gn
+index 96537a4..b2c23cd 100644
+--- a/components/os_crypt/async/browser/BUILD.gn
++++ b/components/os_crypt/async/browser/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/config/features.gni")
+ 
+ component("browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "os_crypt_async.cc",
+     "os_crypt_async.h",
+diff --git a/components/os_crypt/async/common/BUILD.gn b/components/os_crypt/async/common/BUILD.gn
+index 8625432..6c82654 100644
+--- a/components/os_crypt/async/common/BUILD.gn
++++ b/components/os_crypt/async/common/BUILD.gn
+@@ -9,6 +9,11 @@ mojom("common_mojom") {
+   generate_java = true
+   sources = [ "encryptor.mojom" ]
+ 
++  if (is_win) {
++    # Windows Phone 8.1: DPAPI declarations (no-op elsewhere).
++    cpp_configs = [ "//build/config/win:phone81_desktop_declarations" ]
++  }
++
+   public_deps = [
+     ":algorithm_mojom",
+     "//mojo/public/mojom/base",
+@@ -58,6 +63,7 @@ mojom("algorithm_mojom") {
+ }
+ 
+ component("common") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "encryptor.cc",
+     "encryptor.h",
+diff --git a/components/policy/core/common/BUILD.gn b/components/policy/core/common/BUILD.gn
+index 798299c..35842a9 100644
+--- a/components/policy/core/common/BUILD.gn
++++ b/components/policy/core/common/BUILD.gn
+@@ -31,6 +31,7 @@ source_set("policy_namespace_internal") {
+ }
+ 
+ source_set("util") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "cloud/cloud_policy_util.cc",
+     "cloud/cloud_policy_util.h",
+diff --git a/components/policy/tools/generate_policy_source.gni b/components/policy/tools/generate_policy_source.gni
+index 9bfa540..434464c 100644
+--- a/components/policy/tools/generate_policy_source.gni
++++ b/components/policy/tools/generate_policy_source.gni
+@@ -59,7 +59,8 @@ template("generate_policy_source") {
+       "--chrome-version-major=" + chrome_version_major,
+       "--policy-templates-file=" +
+           rebase_path(policy_templates_generated_json_path, root_build_dir),
+-      "--target-platform=" + target_os,
++      # Windows Store/Phone builds use the Windows policy set.
++      "--target-platform=" + string_replace(target_os, "winuwp", "win"),
+     ]
+     if (!chunking) {
+       args += [ "--no-chunking" ]
+diff --git a/components/services/font_data/BUILD.gn b/components/services/font_data/BUILD.gn
+index 824ec2a..394e648 100644
+--- a/components/services/font_data/BUILD.gn
++++ b/components/services/font_data/BUILD.gn
+@@ -2,9 +2,11 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//testing/test.gni")
+ 
+ source_set("lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "font_data_service_impl.cc",
+     "font_data_service_impl.h",
+@@ -12,7 +14,8 @@ source_set("lib") {
+     "local_font_matcher.h",
+   ]
+ 
+-  if (is_win) {
++  if (is_win && !phone81_port) {
++    # Windows Phone 8.1 has no DirectWrite 3 (IDWriteFactory3 font sets).
+     sources += [
+       "dwrite_local_font_matcher.cc",
+       "dwrite_local_font_matcher.h",
+diff --git a/components/services/font_data/local_font_matcher.cc b/components/services/font_data/local_font_matcher.cc
+index 09032a8..1ab7473 100644
+--- a/components/services/font_data/local_font_matcher.cc
++++ b/components/services/font_data/local_font_matcher.cc
+@@ -9,6 +9,10 @@
+ #include "build/build_config.h"
+ 
+ #if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#endif
++
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+ #include "components/services/font_data/dwrite_local_font_matcher.h"
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+@@ -16,7 +20,7 @@ namespace font_data_service {
+ 
+ // static
+ std::unique_ptr<LocalFontMatcher> LocalFontMatcher::Create() {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   return std::make_unique<DWriteLocalFontMatcher>();
+ #else
+   return nullptr;
+diff --git a/components/services/quarantine/BUILD.gn b/components/services/quarantine/BUILD.gn
+index 8862124..728c6d1 100644
+--- a/components/services/quarantine/BUILD.gn
++++ b/components/services/quarantine/BUILD.gn
+@@ -9,6 +9,7 @@ if (is_android) {
+ }
+ 
+ static_library("quarantine") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "quarantine.cc",
+     "quarantine.h",
+diff --git a/components/services/storage/public/cpp/filesystem/BUILD.gn b/components/services/storage/public/cpp/filesystem/BUILD.gn
+index 8460811..36a0c0a 100644
+--- a/components/services/storage/public/cpp/filesystem/BUILD.gn
++++ b/components/services/storage/public/cpp/filesystem/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ component("filesystem") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "storage_service_filesystem_support"
+ 
+   public = [
 diff --git a/components/sqlite_vfs/file_system_id.cc b/components/sqlite_vfs/file_system_id.cc
 index 7a26f81..c00a9c8 100644
 --- a/components/sqlite_vfs/file_system_id.cc
@@ -6327,6 +6617,18 @@ index 7a26f81..c00a9c8 100644
  #elif BUILDFLAG(IS_POSIX)
      base::stat_wrapper_t stat_info;
      if (base::File::Fstat(file.GetPlatformFile(), &stat_info) != 0) {
+diff --git a/components/startup_metric_utils/browser/BUILD.gn b/components/startup_metric_utils/browser/BUILD.gn
+index 533f1f2..090136b 100644
+--- a/components/startup_metric_utils/browser/BUILD.gn
++++ b/components/startup_metric_utils/browser/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ source_set("browser") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "startup_metric_utils.cc",
+     "startup_metric_utils.h",
 diff --git a/components/system_cpu/BUILD.gn b/components/system_cpu/BUILD.gn
 index 8d4f59b..fc90349 100644
 --- a/components/system_cpu/BUILD.gn
@@ -6374,6 +6676,18 @@ index 4c9bdb9..e198cec 100644
  #elif BUILDFLAG(IS_WIN)
    return CpuProbeWin::Create();
  #elif BUILDFLAG(IS_MAC)
+diff --git a/components/system_media_controls/BUILD.gn b/components/system_media_controls/BUILD.gn
+index 8089e11..c0b6660 100644
+--- a/components/system_media_controls/BUILD.gn
++++ b/components/system_media_controls/BUILD.gn
+@@ -17,6 +17,7 @@ if (is_mac) {
+ }
+ 
+ component("system_media_controls") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   friend = [ ":unit_tests" ]
+ 
+   public = [
 diff --git a/components/tracing/BUILD.gn b/components/tracing/BUILD.gn
 index 74237ca..85823f4 100644
 --- a/components/tracing/BUILD.gn
@@ -6419,6 +6733,60 @@ index 74237ca..85823f4 100644
      sources += [
        "common/active_processes_win_unittest.cc",
        "common/etw_consumer_win_unittest.cc",
+diff --git a/components/update_client/BUILD.gn b/components/update_client/BUILD.gn
+index eb70082..8c03491 100644
+--- a/components/update_client/BUILD.gn
++++ b/components/update_client/BUILD.gn
+@@ -86,6 +86,7 @@ group("common_impl") {
+ }
+ 
+ static_library("update_client") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   include_dirs = [ "//third_party/puffin/src/include" ]
+   sources = [
+     "action_runner.cc",
+diff --git a/components/update_client/delivery_optimization_downloader_win.cc b/components/update_client/delivery_optimization_downloader_win.cc
+index 1807c94..2baa93c 100644
+--- a/components/update_client/delivery_optimization_downloader_win.cc
++++ b/components/update_client/delivery_optimization_downloader_win.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "components/update_client/delivery_optimization_downloader_win.h"
+ 
++#include "base/win/windows_phone_8_1.h"
++
+ #include <objbase.h>
+ 
+ #include <windows.h>
+@@ -165,6 +167,7 @@ constexpr base::FilePath::CharType kDownloadDirectoryPrefixMatcher[] =
+ int GetDownloadHttpStatus(const Microsoft::WRL::ComPtr<IDODownload>& download,
+                           HRESULT error,
+                           HRESULT extended_error) {
++#if !BASE_WIN_IS_PHONE_8_1  // DODownloadProperty_HttpStatusCode: newer SDK.
+   if (download) {
+     base::win::ScopedVariant status;
+     if (SUCCEEDED(download->GetProperty(DODownloadProperty_HttpStatusCode,
+@@ -173,6 +176,7 @@ int GetDownloadHttpStatus(const Microsoft::WRL::ComPtr<IDODownload>& download,
+       return static_cast<int>(V_UI4(status.ptr()));
+     }
+   }
++#endif  // !BASE_WIN_IS_PHONE_8_1
+   const int http_status =
+       DeliveryOptimizationDownloader::GetHttpStatusFromHresult(error);
+   return http_status ? http_status
+diff --git a/components/variations/field_trial_config/BUILD.gn b/components/variations/field_trial_config/BUILD.gn
+index d495fce..2ddb905 100644
+--- a/components/variations/field_trial_config/BUILD.gn
++++ b/components/variations/field_trial_config/BUILD.gn
+@@ -18,7 +18,7 @@ action("field_trial_testing_config_action") {
+     "$target_gen_dir/$out_name.h",
+   ]
+ 
+-  if (current_os == "win") {
++  if (current_os == "win" || current_os == "winuwp") {
+     platform = "windows"
+   } else {
+     platform = current_os
 diff --git a/components/viz/service/display_embedder/output_surface_provider_impl.cc b/components/viz/service/display_embedder/output_surface_provider_impl.cc
 index c15bbfb..de87ccf 100644
 --- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
@@ -8050,6 +8418,91 @@ index 907350d..d1b2f71 100644
  
  void ShellPlatformDelegate::SetIsLoading(Shell* shell, bool loading) {}
  
+diff --git a/content/utility/on_device_model/BUILD.gn b/content/utility/on_device_model/BUILD.gn
+index 7176313..901087a 100644
+--- a/content/utility/on_device_model/BUILD.gn
++++ b/content/utility/on_device_model/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//services/on_device_model/on_device_model.gni")
+ 
+ source_set("on_device_model_sandbox_init") {
+@@ -25,7 +26,7 @@ source_set("on_device_model_sandbox_init") {
+       "//sandbox/policy",
+     ]
+   }
+-  if (!is_fuchsia) {
++  if (!is_fuchsia && !phone81_port) {
+     deps += [
+       "//third_party/dawn/include/dawn:cpp_headers",
+       "//third_party/dawn/src/dawn:proc",
+diff --git a/content/utility/on_device_model/on_device_model_sandbox_init.cc b/content/utility/on_device_model/on_device_model_sandbox_init.cc
+index 3502a0c..fbc924a 100644
+--- a/content/utility/on_device_model/on_device_model_sandbox_init.cc
++++ b/content/utility/on_device_model/on_device_model_sandbox_init.cc
+@@ -13,6 +13,19 @@
+ #include "build/chromecast_buildflags.h"
+ #include "services/on_device_model/ml_internal_buildflags.h"
+ 
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#endif
++
++// Windows Phone 8.1 has no D3D12/WebGPU driver to warm up.
++#if !BUILDFLAG(IS_FUCHSIA) &&                                   \
++    !(BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_CAST_RECEIVER)) && \
++    !(BUILDFLAG(IS_WIN) && BASE_WIN_IS_PHONE_8_1)
++#define ON_DEVICE_MODEL_USE_DAWN 1
++#else
++#define ON_DEVICE_MODEL_USE_DAWN 0
++#endif
++
+ #if BUILDFLAG(ENABLE_ML_INTERNAL)
+ #include "services/on_device_model/ml/chrome_ml.h"      // nogncheck
+ #include "services/on_device_model/ml/gpu_blocklist.h"  // nogncheck
+@@ -32,8 +45,7 @@
+ #include "sandbox/policy/linux/sandbox_linux.h"
+ #endif
+ 
+-#if !BUILDFLAG(IS_FUCHSIA) && \
+-    !(BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_CAST_RECEIVER))
++#if ON_DEVICE_MODEL_USE_DAWN
+ #include "base/feature_list.h"
+ #include "third_party/dawn/include/dawn/dawn_proc.h"          // nogncheck
+ #include "third_party/dawn/include/dawn/native/DawnNative.h"  // nogncheck
+@@ -106,8 +118,7 @@ void AddVulkanDriverPermissions(
+ }
+ #endif
+ 
+-#if !BUILDFLAG(IS_FUCHSIA) && \
+-    !(BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_CAST_RECEIVER))
++#if ON_DEVICE_MODEL_USE_DAWN
+ // If this feature is enabled, a WebGPU device is created for each valid
+ // adapter. This makes sure any relevant drivers or other libs are loaded before
+ // enabling the sandbox.
+@@ -121,8 +132,7 @@ BASE_FEATURE(kOnDeviceModelWarmDrivers,
+ #endif
+ 
+ bool ShouldWarmDrivers() {
+-#if BUILDFLAG(IS_FUCHSIA) || \
+-    (BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_CAST_RECEIVER))
++#if !ON_DEVICE_MODEL_USE_DAWN
+   return false;
+ #else
+   bool is_gpu_not_blocklisted = true;
+@@ -165,8 +175,7 @@ bool PreSandboxInit() {
+     // Warm any relevant drivers before attempting to bring up the sandbox. For
+     // good measure we initialize a device instance for any adapter with an
+     // appropriate backend on top of any integrated or discrete GPU.
+-#if !BUILDFLAG(IS_FUCHSIA) && \
+-    !(BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_CAST_RECEIVER))
++#if ON_DEVICE_MODEL_USE_DAWN
+     dawnProcSetProcs(&dawn::native::GetProcs());
+     auto instance = std::make_unique<dawn::native::Instance>();
+     const wgpu::RequestAdapterOptions adapter_options{
 diff --git a/crypto/BUILD.gn b/crypto/BUILD.gn
 index bb7c677..b990fe0 100644
 --- a/crypto/BUILD.gn
@@ -8281,6 +8734,76 @@ index f1e36ce..9a43ba9 100644
  
  }  // namespace crypto
 +#endif  // Windows KeyCredentialManager
+diff --git a/device/base/BUILD.gn b/device/base/BUILD.gn
+index 14f7b56..8a5fa24 100644
+--- a/device/base/BUILD.gn
++++ b/device/base/BUILD.gn
+@@ -17,6 +17,7 @@ rust_static_library("string_util_rs") {
+ }
+ 
+ component("base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "device_base"
+ 
+   sources = [
+diff --git a/device/bluetooth/BUILD.gn b/device/bluetooth/BUILD.gn
+index 9e1af8c..2d03f0d 100644
+--- a/device/bluetooth/BUILD.gn
++++ b/device/bluetooth/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/buildflag_header.gni")
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//device/bluetooth/emulation/buildflags.gni")
+ 
+ declare_args() {
+@@ -16,7 +17,7 @@ if (is_android) {
+ }
+ 
+ config("bluetooth_config") {
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     ldflags = [
+       "/DELAYLOAD:BluetoothApis.dll",
+ 
+@@ -289,7 +290,13 @@ component("bluetooth") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && phone81_port) {
++    # Windows Phone 8.1: no Win32/WinRT Bluetooth stack in the app partition.
++    defines += [ "NO_PLATFORM_BLUETOOTH" ]
++    sources += [ "bluetooth_adapter_stub.cc" ]
++  }
++
++  if (is_win && !phone81_port) {
+     sources += [
+       "bluetooth_adapter_win.cc",
+       "bluetooth_adapter_win.h",
+diff --git a/device/bluetooth/bluetooth_adapter_factory.cc b/device/bluetooth/bluetooth_adapter_factory.cc
+index 490b8a3..eaac767 100644
+--- a/device/bluetooth/bluetooth_adapter_factory.cc
++++ b/device/bluetooth/bluetooth_adapter_factory.cc
+@@ -23,7 +23,7 @@
+ #if BUILDFLAG(IS_MAC)
+ #include "device/bluetooth/bluetooth_adapter_mac_permission.h"
+ #endif
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(NO_PLATFORM_BLUETOOTH)
+ #include "device/bluetooth/bluetooth_adapter_win.h"
+ #endif
+ 
+@@ -96,7 +96,7 @@ void BluetoothAdapterFactory::GetAdapter(AdapterCallback callback) {
+ }
+ 
+ void BluetoothAdapterFactory::GetClassicAdapter(AdapterCallback callback) {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(NO_PLATFORM_BLUETOOTH)
+   DCHECK(IsBluetoothSupported());
+ 
+   if (!classic_adapter_) {
 diff --git a/gin/v8_initializer.cc b/gin/v8_initializer.cc
 index f63abad..2b70f55 100644
 --- a/gin/v8_initializer.cc
@@ -8325,6 +8848,72 @@ index f63abad..2b70f55 100644
    if (mmapped_file->Initialize(std::move(file), region)) {
      *mmapped_file_out = mmapped_file.release();
      return true;
+diff --git a/gpu/command_buffer/client/internal/BUILD.gn b/gpu/command_buffer/client/internal/BUILD.gn
+index 2f36e61..3e52441 100644
+--- a/gpu/command_buffer/client/internal/BUILD.gn
++++ b/gpu/command_buffer/client/internal/BUILD.gn
+@@ -1,6 +1,7 @@
+ import("//build/config/ui.gni")
+ 
+ component("internal") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     # TODO(blundell): Figure out how to sustainably restrict this to only being
+     # visible to gpu_unittests. That target comes with a large number of
+diff --git a/gpu/config/BUILD.gn b/gpu/config/BUILD.gn
+index d780ec1..5a38693 100644
+--- a/gpu/config/BUILD.gn
++++ b/gpu/config/BUILD.gn
+@@ -80,6 +80,7 @@ action("workaround_list") {
+ }
+ 
+ component("config") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "device_perf_info.cc",
+     "device_perf_info.h",
+diff --git a/gpu/ipc/common/device_perf_info_mojom_traits.cc b/gpu/ipc/common/device_perf_info_mojom_traits.cc
+index 0473c21..f36ac09 100644
+--- a/gpu/ipc/common/device_perf_info_mojom_traits.cc
++++ b/gpu/ipc/common/device_perf_info_mojom_traits.cc
+@@ -7,6 +7,14 @@
+ #include "base/notreached.h"
+ #include "build/build_config.h"
+ 
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#if BASE_WIN_IS_PHONE_8_1
++// The Phone 8.1 d3dcommon.h (and SDK 10.0.22621) predate this value.
++#define D3D_FEATURE_LEVEL_1_0_GENERIC static_cast<D3D_FEATURE_LEVEL>(0x100)
++#endif
++#endif
++
+ namespace mojo {
+ 
+ #if BUILDFLAG(IS_WIN)
+@@ -15,8 +23,10 @@ gpu::mojom::Direct3DFeatureLevel
+ EnumTraits<gpu::mojom::Direct3DFeatureLevel, D3D_FEATURE_LEVEL>::ToMojom(
+     D3D_FEATURE_LEVEL d3d_feature_level) {
+   switch (d3d_feature_level) {
++#if !BASE_WIN_IS_PHONE_8_1  // Not in the Phone 8.1 D3D_FEATURE_LEVEL enum.
+     case D3D_FEATURE_LEVEL_1_0_GENERIC:
+       return gpu::mojom::Direct3DFeatureLevel::k1_0_Generic;
++#endif
+     case D3D_FEATURE_LEVEL_1_0_CORE:
+       return gpu::mojom::Direct3DFeatureLevel::k1_0_Core;
+     case D3D_FEATURE_LEVEL_9_1:
+diff --git a/media/base/win/BUILD.gn b/media/base/win/BUILD.gn
+index 9065d67..51493ee 100644
+--- a/media/base/win/BUILD.gn
++++ b/media/base/win/BUILD.gn
+@@ -77,6 +77,7 @@ source_set("dcomp_texture_wrapper") {
+ }
+ 
+ source_set("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "d3d11_mocks.cc",
 diff --git a/media/gpu/BUILD.gn b/media/gpu/BUILD.gn
 index 50a21ab..9bc8481 100644
 --- a/media/gpu/BUILD.gn
@@ -8406,6 +8995,18 @@ index f16c736..256a1f4 100644
  
  namespace media {
  
+diff --git a/media/midi/BUILD.gn b/media/midi/BUILD.gn
+index 5b4e60b..bfaeb66 100644
+--- a/media/midi/BUILD.gn
++++ b/media/midi/BUILD.gn
+@@ -81,6 +81,7 @@ source_set("ump_helper") {
+ }
+ 
+ component("midi") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "message_util.cc",
+     "message_util.h",
 diff --git a/media/mojo/services/BUILD.gn b/media/mojo/services/BUILD.gn
 index 0ac893f..0820826 100644
 --- a/media/mojo/services/BUILD.gn
@@ -9161,7 +9762,7 @@ index 987186d..9cc3018 100644
  
  void SetUnsafeFileHandleCallbackForTesting(
 diff --git a/net/BUILD.gn b/net/BUILD.gn
-index 67db0de..c6108a5 100644
+index 67db0de..8eebd7d 100644
 --- a/net/BUILD.gn
 +++ b/net/BUILD.gn
 @@ -1567,27 +1567,11 @@ component("net") {
@@ -9192,7 +9793,7 @@ index 67db0de..c6108a5 100644
        "proxy_resolution/win/windows_system_proxy_resolution_request.cc",
        "proxy_resolution/win/windows_system_proxy_resolution_request.h",
        "proxy_resolution/win/windows_system_proxy_resolution_service.cc",
-@@ -1600,10 +1584,30 @@ component("net") {
+@@ -1600,10 +1584,31 @@ component("net") {
        "socket/tcp_socket_win.h",
        "socket/udp_socket_win.cc",
        "socket/udp_socket_win.h",
@@ -9219,6 +9820,7 @@ index 67db0de..c6108a5 100644
 +        "base/network_interfaces_phone.cc",
 +        "http/url_security_manager_posix.cc",
 +      ]
++
 +      # The blockfile cache requires writable memory mappings, which the Phone
 +      # AppContainer cannot create. DiskCache selects the simple backend.
 +      sources -= filter_include(sources, [ "disk_cache/blockfile/*" ])
@@ -9226,7 +9828,7 @@ index 67db0de..c6108a5 100644
    }
  
    if (use_kerberos) {
-@@ -1648,7 +1652,29 @@ component("net") {
+@@ -1648,7 +1653,29 @@ component("net") {
      ]
    }
  
@@ -9257,7 +9859,7 @@ index 67db0de..c6108a5 100644
      sources += [
        "http/http_auth_handler_ntlm_portable.cc",
        "http/http_auth_ntlm_mechanism.cc",
-@@ -1700,7 +1726,7 @@ component("net") {
+@@ -1700,7 +1727,7 @@ component("net") {
        "//base/version_info",
        "//net/cert:root_store_proto_lite",
      ]
@@ -9266,7 +9868,7 @@ index 67db0de..c6108a5 100644
        sources += [
          "cert/internal/trust_store_win.cc",
          "cert/internal/trust_store_win.h",
-@@ -1826,6 +1852,15 @@ component("net") {
+@@ -1826,6 +1853,15 @@ component("net") {
        "winhttp.lib",
      ]
  
@@ -9282,7 +9884,15 @@ index 67db0de..c6108a5 100644
      ldflags = [ "/DELAYLOAD:urlmon.dll" ]
    }
  
-@@ -3375,9 +3410,6 @@ target(_test_target_type, "net_unittests") {
+@@ -2263,6 +2299,7 @@ static_library("gtest_util") {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "base/connection_endpoint_metadata_test_util.cc",
+@@ -3375,9 +3412,6 @@ target(_test_target_type, "net_unittests") {
        "base/network_change_notifier_win_unittest.cc",
        "base/network_cost_change_notifier_win_unittest.cc",
        "base/network_interfaces_win_unittest.cc",
@@ -9292,7 +9902,7 @@ index 67db0de..c6108a5 100644
        "proxy_resolution/win/dhcp_pac_file_adapter_fetcher_win_unittest.cc",
        "proxy_resolution/win/dhcp_pac_file_fetcher_win_unittest.cc",
        "proxy_resolution/win/proxy_config_service_win_unittest.cc",
-@@ -3568,7 +3600,13 @@ target(_test_target_type, "net_unittests") {
+@@ -3568,7 +3602,13 @@ target(_test_target_type, "net_unittests") {
      ]
    }
  
@@ -9307,7 +9917,7 @@ index 67db0de..c6108a5 100644
      sources += [
        "http/http_auth_handler_ntlm_portable_unittest.cc",
        "ntlm/ntlm_buffer_reader_unittest.cc",
-@@ -3786,7 +3824,7 @@ target(_test_target_type, "net_unittests") {
+@@ -3786,7 +3826,7 @@ target(_test_target_type, "net_unittests") {
          "//base/version_info",
          "//net/data/ssl/chrome_root_store:gen_signer_set_inc",
        ]
@@ -10197,17 +10807,17 @@ index c3c79e2..7920be8 100644
      return base::DeleteFile(rename_target);
  
 diff --git a/net/dns/BUILD.gn b/net/dns/BUILD.gn
-index 5f41620..d63c34d 100644
+index 5f41620..e28b981 100644
 --- a/net/dns/BUILD.gn
 +++ b/net/dns/BUILD.gn
-@@ -3,6 +3,7 @@
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
  # found in the LICENSE file.
  
- import("//net/features.gni")
 +import("//build/config/win/phone81.gni")
+ import("//net/features.gni")
  import("//testing/libfuzzer/fuzzer_test.gni")
  import("//third_party/protobuf/proto_library.gni")
- 
 @@ -126,11 +127,15 @@ source_set("dns") {
    ]
  
@@ -10238,6 +10848,14 @@ index 5f41620..d63c34d 100644
      sources += [ "dns_config_service_win_unittest.cc" ]
    }
  
+@@ -526,6 +531,7 @@ source_set("tests") {
+ }
+ 
+ source_set("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     "//net:test_support",
+     "//net/dns/public:tests",
 diff --git a/net/dns/dns_config_service_phone.cc b/net/dns/dns_config_service_phone.cc
 new file mode 100644
 index 0000000..c9a1544
@@ -11145,6 +11763,18 @@ index 44fc63f..e14b879 100644
  
    THREAD_CHECKER(thread_checker_);
  
+diff --git a/net/third_party/quiche/BUILD.gn b/net/third_party/quiche/BUILD.gn
+index 21628a2..5f0c562 100644
+--- a/net/third_party/quiche/BUILD.gn
++++ b/net/third_party/quiche/BUILD.gn
+@@ -321,6 +321,7 @@ static_library("quiche_test_support") {
+ }
+ 
+ static_library("quiche_tool_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+               "overrides/quiche_platform_impl/quiche_command_line_flags_impl.cc",
 diff --git a/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc b/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc
 index 342597b..f0b2da5 100644
 --- a/net/third_party/quiche/src/quiche/common/quiche_ip_address.cc
@@ -11279,6 +11909,31 @@ index 342597b..f0b2da5 100644
  }
  
  bool QuicheIpAddress::IsIPv4() const {
+diff --git a/printing/BUILD.gn b/printing/BUILD.gn
+index 9aa693b..efc3306 100644
+--- a/printing/BUILD.gn
++++ b/printing/BUILD.gn
+@@ -35,6 +35,7 @@ config("strict") {
+ # //ui/accessibility).  New files should normally be added to :printing, and
+ # only be moved here if they are also required by //printing/backend.
+ component("printing_base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "print_job_constants.cc",
+     "print_job_constants.h",
+diff --git a/printing/backend/BUILD.gn b/printing/backend/BUILD.gn
+index 165da66..b1ef3e4 100644
+--- a/printing/backend/BUILD.gn
++++ b/printing/backend/BUILD.gn
+@@ -16,6 +16,8 @@ if (use_cups && is_chromeos) {
+ }
+ 
+ component("backend") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
++
+   # Avoid producing a very generic "backend.dll" or "libbackend.so".
+   output_name = "printing_backend"
+ 
 diff --git a/sandbox/policy/BUILD.gn b/sandbox/policy/BUILD.gn
 index 4af7b9f..69cb65b 100644
 --- a/sandbox/policy/BUILD.gn
@@ -11528,6 +12183,162 @@ index 0000000..14cba71
 +}
 +
 +}  // namespace sandbox
+diff --git a/services/device/BUILD.gn b/services/device/BUILD.gn
+index 8877fc0..fca96be 100644
+--- a/services/device/BUILD.gn
++++ b/services/device/BUILD.gn
+@@ -550,6 +550,7 @@ source_set("usb_test_gadget") {
+ }
+ 
+ source_set("utility") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = []
+ 
+   if (is_mac) {
+diff --git a/services/device/battery/BUILD.gn b/services/device/battery/BUILD.gn
+index d583ebc..c2891f6 100644
+--- a/services/device/battery/BUILD.gn
++++ b/services/device/battery/BUILD.gn
+@@ -8,6 +8,7 @@ import("//mojo/public/tools/bindings/mojom.gni")
+ # On android, BatteryManager mojo interface is implemented directly in Java.
+ if (!is_android) {
+   source_set("battery") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     visibility = [
+       "//services/device:lib",
+       "//services/device:tests",
+diff --git a/services/device/generic_sensor/BUILD.gn b/services/device/generic_sensor/BUILD.gn
+index 4368c3a..ed2ec02 100644
+--- a/services/device/generic_sensor/BUILD.gn
++++ b/services/device/generic_sensor/BUILD.gn
+@@ -10,6 +10,7 @@ if (is_android) {
+ }
+ 
+ source_set("generic_sensor") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ "//services/device:*" ]
+ 
+   output_name = "generic_sensor"
+diff --git a/services/device/geolocation/BUILD.gn b/services/device/geolocation/BUILD.gn
+index 728b970..3435c7b 100644
+--- a/services/device/geolocation/BUILD.gn
++++ b/services/device/geolocation/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ 
+ if (is_android) {
+   import("//build/config/android/config.gni")
+@@ -11,6 +12,7 @@ if (is_android) {
+ }
+ 
+ source_set("geolocation") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":*",
+     "//services/device:*",
+@@ -125,7 +127,8 @@ source_set("geolocation") {
+       "wifi_data_provider_mac.h",
+       "wifi_data_provider_mac.mm",
+     ]
+-  } else if (is_win) {
++  } else if (is_win && !phone81_port) {
++    # Windows Phone 8.1 has no WLAN API: it uses EmptyWifiDataProvider.
+     sources += [
+       "wifi_data_provider_common_win.cc",
+       "wifi_data_provider_common_win.h",
+diff --git a/services/device/hid/BUILD.gn b/services/device/hid/BUILD.gn
+index 1a016eb..c365b26 100644
+--- a/services/device/hid/BUILD.gn
++++ b/services/device/hid/BUILD.gn
+@@ -11,6 +11,7 @@ if (is_android) {
+ }
+ 
+ source_set("hid") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "hid_collection.cc",
+     "hid_collection.h",
+diff --git a/services/device/public/cpp/geolocation/BUILD.gn b/services/device/public/cpp/geolocation/BUILD.gn
+index 5a357d9..ca7be42 100644
+--- a/services/device/public/cpp/geolocation/BUILD.gn
++++ b/services/device/public/cpp/geolocation/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//services/device/public/cpp/geolocation/buildflags.gni")
++import("//build/config/win/phone81.gni")
+ 
+ buildflag_header("buildflags") {
+   header = "buildflags.h"
+@@ -10,6 +11,7 @@ buildflag_header("buildflags") {
+ }
+ 
+ component("geolocation") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "geolocation_system_permission_manager.cc",
+     "geolocation_system_permission_manager.h",
+@@ -42,7 +44,7 @@ component("geolocation") {
+       frameworks += [ "CoreWLAN.framework" ]
+     }
+   }
+-  if (is_win) {
++  if (is_win && !phone81_port) {
+     sources += [
+       "system_geolocation_source_win.cc",
+       "system_geolocation_source_win.h",
+diff --git a/services/device/serial/BUILD.gn b/services/device/serial/BUILD.gn
+index 04abe1e..a49fe77 100644
+--- a/services/device/serial/BUILD.gn
++++ b/services/device/serial/BUILD.gn
+@@ -18,6 +18,7 @@ if (is_win || ((is_linux || is_chromeos) && use_udev) || is_mac || is_android) {
+   }
+ 
+   source_set("serial") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     visibility = [
+       ":test_support",
+       "//services/device:lib",
+diff --git a/services/device/usb/BUILD.gn b/services/device/usb/BUILD.gn
+index 4e8a030..da111c0 100644
+--- a/services/device/usb/BUILD.gn
++++ b/services/device/usb/BUILD.gn
+@@ -13,6 +13,8 @@ if (is_android) {
+ }
+ 
+ static_library("usb") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
++
+   # Only targets under //services/device folder can depend on it.
+   visibility = [
+     ":*",
+diff --git a/services/device/wake_lock/power_save_blocker/BUILD.gn b/services/device/wake_lock/power_save_blocker/BUILD.gn
+index ce192d6..86a0229 100644
+--- a/services/device/wake_lock/power_save_blocker/BUILD.gn
++++ b/services/device/wake_lock/power_save_blocker/BUILD.gn
+@@ -11,6 +11,7 @@ if (is_android) {
+ }
+ 
+ source_set("power_save_blocker") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     # Exo Wayland idle inhibit protocol needs to directly use the Ash
+     # PowerSaveBlocker.
+diff --git a/services/network/public/cpp/BUILD.gn b/services/network/public/cpp/BUILD.gn
+index 6d31522..b21201e 100644
+--- a/services/network/public/cpp/BUILD.gn
++++ b/services/network/public/cpp/BUILD.gn
+@@ -615,6 +615,7 @@ component("http_request_headers_mojom_support") {
+ }
+ 
+ component("cpp_base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "network_cpp_base"
+ 
+   sources = [
 diff --git a/services/network/url_request_context_builder_mojo.cc b/services/network/url_request_context_builder_mojo.cc
 index a8e8fbb..81dd3ef 100644
 --- a/services/network/url_request_context_builder_mojo.cc
@@ -11571,6 +12382,130 @@ index a8e8fbb..81dd3ef 100644
    return net::WindowsSystemProxyResolutionService::Create(
        std::make_unique<WindowsSystemProxyResolverMojo>(
            std::move(mojo_system_proxy_resolver_)),
+diff --git a/services/on_device_model/BUILD.gn b/services/on_device_model/BUILD.gn
+index 3dff269..c005bc7 100644
+--- a/services/on_device_model/BUILD.gn
++++ b/services/on_device_model/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/buildflag_header.gni")
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//components/optimization_guide/features.gni")
+ import("//services/on_device_model/on_device_model.gni")
+ import("//third_party/dawn/scripts/dawn_features.gni")
+@@ -73,7 +74,7 @@ if (use_blink || (is_ios && build_with_internal_optimization_guide)) {
+     if (is_android) {
+       deps += [ "//services/on_device_model/android" ]
+     }
+-    if (!is_fuchsia && !(is_linux && enable_cast_receiver)) {
++    if (!is_fuchsia && !(is_linux && enable_cast_receiver) && !phone81_port) {
+       deps += [
+         "//third_party/dawn/include/dawn:cpp_headers",
+         "//third_party/dawn/src/dawn:proc",
+diff --git a/services/on_device_model/decision/BUILD.gn b/services/on_device_model/decision/BUILD.gn
+index 6971d89..4518566 100644
+--- a/services/on_device_model/decision/BUILD.gn
++++ b/services/on_device_model/decision/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ source_set("decision") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "decision_model.cc",
+     "decision_model.h",
+diff --git a/services/on_device_model/ml/BUILD.gn b/services/on_device_model/ml/BUILD.gn
+index b8b1ddd..e524493 100644
+--- a/services/on_device_model/ml/BUILD.gn
++++ b/services/on_device_model/ml/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/features.gni")
++import("//build/config/win/phone81.gni")
+ import("//components/optimization_guide/features.gni")
+ import("//services/on_device_model/on_device_model.gni")
+ 
+@@ -71,8 +72,13 @@ if (use_blink || (is_ios && build_with_internal_optimization_guide)) {
+       "//third_party/abseil-cpp:absl",
+       "//third_party/angle:includes",
+       "//third_party/dawn/src/dawn:proc",
+-      "//third_party/dawn/src/dawn/native",
+     ]
++    if (phone81_port) {
++      # Headers only: Windows Phone 8.1 builds no Dawn backend.
++      deps += [ "//third_party/dawn/src/dawn/native:headers" ]
++    } else {
++      deps += [ "//third_party/dawn/src/dawn/native" ]
++    }
+ 
+     if (enable_constraints) {
+       defines += [ "ENABLE_ON_DEVICE_CONSTRAINTS" ]
+diff --git a/services/on_device_model/ml/chrome_ml.cc b/services/on_device_model/ml/chrome_ml.cc
+index de95872..145e949 100644
+--- a/services/on_device_model/ml/chrome_ml.cc
++++ b/services/on_device_model/ml/chrome_ml.cc
+@@ -24,6 +24,9 @@
+ #include "services/on_device_model/ml/chrome_ml_api.h"
+ #include "services/on_device_model/ml/chrome_ml_holder.h"
+ #include "third_party/dawn/include/dawn/dawn_proc.h"
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#endif
+ #include "third_party/dawn/include/dawn/native/DawnNative.h"
+ #include "third_party/dawn/include/dawn/webgpu_cpp.h"
+ #include "third_party/rust/chromium_crates_io/vendor/llguidance-v1/llguidance.h"
+@@ -207,11 +210,13 @@ std::unique_ptr<ChromeML> ChromeML::Create(
+   std::unique_ptr<ChromeML> chrome_ml =
+       base::WrapUnique(new ChromeML(std::move(holder)));
+ 
++#if !(BUILDFLAG(IS_WIN) && BASE_WIN_IS_PHONE_8_1)
+   dawnProcSetProcs(&dawn::native::GetProcs());
+   if (!chrome_ml->TryInitDawnProcs(dawn::native::GetProcs())) {
+     FatalGpuErrorFn("Failed to initialize Dawn's proc tables.");
+     return nullptr;
+   }
++#endif  // Windows Phone 8.1 builds no Dawn backend (and has no ML library).
+   chrome_ml->SetFatalErrorFn(&FatalGpuErrorFn);
+ 
+   const ChromeMLMetricsFns metrics_fns{
+diff --git a/services/preferences/tracked/BUILD.gn b/services/preferences/tracked/BUILD.gn
+index dbb1766..ab56723 100644
+--- a/services/preferences/tracked/BUILD.gn
++++ b/services/preferences/tracked/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ source_set("tracked") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "device_id.h",
+     "dictionary_hash_store_contents.cc",
+diff --git a/services/resource_coordinator/public/cpp/memory_instrumentation/BUILD.gn b/services/resource_coordinator/public/cpp/memory_instrumentation/BUILD.gn
+index c1a5250..70b7538 100644
+--- a/services/resource_coordinator/public/cpp/memory_instrumentation/BUILD.gn
++++ b/services/resource_coordinator/public/cpp/memory_instrumentation/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ component("memory_instrumentation") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "client_process_impl.cc",
+     "client_process_impl.h",
+diff --git a/services/test/echo/BUILD.gn b/services/test/echo/BUILD.gn
+index 7666619..809c0da 100644
+--- a/services/test/echo/BUILD.gn
++++ b/services/test/echo/BUILD.gn
+@@ -5,6 +5,7 @@ import("//build/config/compiler/compiler.gni")
+ import("//testing/test.gni")
+ 
+ source_set("lib") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "echo_service.cc",
+     "echo_service.h",
 diff --git a/services/tracing/BUILD.gn b/services/tracing/BUILD.gn
 index 8b7763d..ebad230 100644
 --- a/services/tracing/BUILD.gn
@@ -11712,6 +12647,79 @@ index 81c71cf..053b099 100644
  
    auto& startup_config = TraceStartupConfig::GetInstance();
  
+diff --git a/services/webnn/public/cpp/BUILD.gn b/services/webnn/public/cpp/BUILD.gn
+index 91d8f4c..6bcce1a 100644
+--- a/services/webnn/public/cpp/BUILD.gn
++++ b/services/webnn/public/cpp/BUILD.gn
+@@ -96,6 +96,7 @@ source_set("in_process_context_provider") {
+ 
+ if (is_win) {
+   component("win") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     sources = [
+       "ep_device_info.cc",
+       "ep_device_info.h",
+diff --git a/services/webnn/public/cpp/platform_functions_win.h b/services/webnn/public/cpp/platform_functions_win.h
+index 77769ef..3a9105c 100644
+--- a/services/webnn/public/cpp/platform_functions_win.h
++++ b/services/webnn/public/cpp/platform_functions_win.h
+@@ -9,6 +9,56 @@
+ 
+ #include <appmodel.h>
+ 
++#include "base/win/windows_phone_8_1.h"
++
++#if BASE_WIN_IS_PHONE_8_1
++// The Phone 8.1 appmodel.h predates the Windows 11 dynamic dependency API.
++// Only the types are needed here: the functions are resolved at run time and
++// are absent on the phone, so every call reports failure.
++enum CreatePackageDependencyOptions {
++  CreatePackageDependencyOptions_None = 0,
++  CreatePackageDependencyOptions_DoNotVerifyDependencyResolution = 0x1,
++  CreatePackageDependencyOptions_ScopeIsSystem = 0x2,
++};
++enum PackageDependencyLifetimeKind {
++  PackageDependencyLifetimeKind_Process = 0,
++  PackageDependencyLifetimeKind_FilePath = 1,
++  PackageDependencyLifetimeKind_RegistryKey = 2,
++};
++enum AddPackageDependencyOptions {
++  AddPackageDependencyOptions_None = 0,
++  AddPackageDependencyOptions_PrependIfRankCollision = 0x1,
++};
++enum PackageDependencyProcessorArchitectures {
++  PackageDependencyProcessorArchitectures_None = 0,
++  PackageDependencyProcessorArchitectures_Neutral = 0x1,
++  PackageDependencyProcessorArchitectures_X86 = 0x2,
++  PackageDependencyProcessorArchitectures_X64 = 0x4,
++  PackageDependencyProcessorArchitectures_Arm = 0x8,
++  PackageDependencyProcessorArchitectures_Arm64 = 0x10,
++  PackageDependencyProcessorArchitectures_X86A64 = 0x20,
++};
++DECLARE_HANDLE(PACKAGEDEPENDENCY_CONTEXT);
++// Declared for decltype() only; never linked (resolved with GetProcAddress).
++extern "C" HRESULT WINAPI TryCreatePackageDependency(
++    PSID user,
++    PCWSTR package_family_name,
++    PACKAGE_VERSION min_version,
++    PackageDependencyProcessorArchitectures architectures,
++    PackageDependencyLifetimeKind lifetime_kind,
++    PCWSTR lifetime_artifact,
++    CreatePackageDependencyOptions options,
++    PWSTR* package_dependency_id);
++extern "C" HRESULT WINAPI DeletePackageDependency(
++    PCWSTR package_dependency_id);
++extern "C" HRESULT WINAPI AddPackageDependency(
++    PCWSTR package_dependency_id,
++    INT32 rank,
++    AddPackageDependencyOptions options,
++    PACKAGEDEPENDENCY_CONTEXT* package_dependency_context,
++    PWSTR* package_full_name);
++#endif  // BASE_WIN_IS_PHONE_8_1
++
+ #include "base/component_export.h"
+ #include "base/files/file_path.h"
+ #include "base/strings/cstring_view.h"
 diff --git a/skia/BUILD.gn b/skia/BUILD.gn
 index 773cc9c..15c9e49 100644
 --- a/skia/BUILD.gn
@@ -12055,6 +13063,25 @@ index f57c187..e8e0434 100644
  
  #include <cassert>
  
+diff --git a/third_party/abseil-cpp/absl/flags/parse.cc b/third_party/abseil-cpp/absl/flags/parse.cc
+index 940bf56..e4dc64f 100644
+--- a/third_party/abseil-cpp/absl/flags/parse.cc
++++ b/third_party/abseil-cpp/absl/flags/parse.cc
+@@ -250,7 +250,13 @@ bool ArgsList::ReadFromFlagfile(const std::string& flag_file_name) {
+ // `value`. If variable is not present in environment returns false, otherwise
+ // returns true.
+ bool GetEnvVar(const char* var_name, std::string& var_value) {
+-#ifdef _WIN32
++#if defined(_WIN32) && defined(WINAPI_FAMILY) && \
++    (WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++  // Windows Phone 8.1 apps have no process environment block.
++  (void)var_name;
++  (void)var_value;
++  return false;
++#elif defined(_WIN32)
+   char buf[1024];
+   auto get_res = GetEnvironmentVariableA(var_name, buf, sizeof(buf));
+   if (get_res >= sizeof(buf)) {
 diff --git a/third_party/abseil-cpp/absl/random/internal/seed_material.cc b/third_party/abseil-cpp/absl/random/internal/seed_material.cc
 index 75b9e29..582db70 100644
 --- a/third_party/abseil-cpp/absl/random/internal/seed_material.cc
@@ -12929,6 +13956,79 @@ index 79b728d..242de80 100644
  namespace {
  // Referenced from base/win/registry.cc in Chromium
  std::optional<DWORD> ReadFromDWORDRegistryKey(HKEY registerKey, const char* registerKeyName) {
+diff --git a/third_party/dawn/src/tint/utils/system/BUILD.gn b/third_party/dawn/src/tint/utils/system/BUILD.gn
+index f3a9e2a..531838e 100644
+--- a/third_party/dawn/src/tint/utils/system/BUILD.gn
++++ b/third_party/dawn/src/tint/utils/system/BUILD.gn
+@@ -38,6 +38,11 @@ import("../../../../scripts/dawn_overrides_with_defaults.gni")
+ import("../../../../scripts/tint_overrides_with_defaults.gni")
+ 
+ import("${tint_src_dir}/tint.gni")
++import("//build/config/win/phone81.gni")
++
++# Windows Phone 8.1 lacks the console/environment Win32 APIs: use the
++# portable implementations.
++_tint_win = tint_build_is_win && !phone81_port
+ 
+ libtint_source_set("system") {
+   sources = [
+@@ -55,11 +60,11 @@ libtint_source_set("system") {
+     "${tint_src_dir}/utils/rtti",
+   ]
+ 
+-  if (!tint_build_is_linux && !tint_build_is_mac && !tint_build_is_win) {
++  if (!tint_build_is_linux && !tint_build_is_mac && !_tint_win) {
+     sources += [ "terminal_other.cc" ]
+   }
+ 
+-  if (!tint_build_is_win) {
++  if (!_tint_win) {
+     sources += [ "env_other.cc" ]
+   }
+ 
+@@ -75,7 +80,7 @@ libtint_source_set("system") {
+     sources += [ "executable_file_mac.cc" ]
+   }
+ 
+-  if (tint_build_is_win) {
++  if (_tint_win) {
+     sources += [
+       "env_windows.cc",
+       "executable_path_windows.cc",
+diff --git a/third_party/dawn/src/tint/utils/text/BUILD.gn b/third_party/dawn/src/tint/utils/text/BUILD.gn
+index b3fad5b..6f4e86c 100644
+--- a/third_party/dawn/src/tint/utils/text/BUILD.gn
++++ b/third_party/dawn/src/tint/utils/text/BUILD.gn
+@@ -38,6 +38,11 @@ import("../../../../scripts/dawn_overrides_with_defaults.gni")
+ import("../../../../scripts/tint_overrides_with_defaults.gni")
+ 
+ import("${tint_src_dir}/tint.gni")
++import("//build/config/win/phone81.gni")
++
++# Windows Phone 8.1 lacks the console/environment Win32 APIs: use the
++# portable implementations.
++_tint_win = tint_build_is_win && !phone81_port
+ 
+ if (tint_build_unittests || tint_build_benchmarks) {
+   import("//testing/test.gni")
+@@ -76,7 +81,7 @@ libtint_source_set("text") {
+     "${tint_src_dir}/utils/system",
+   ]
+ 
+-  if (!tint_build_is_linux && !tint_build_is_mac && !tint_build_is_win) {
++  if (!tint_build_is_linux && !tint_build_is_mac && !_tint_win) {
+     sources += [ "styled_text_printer_other.cc" ]
+   }
+ 
+@@ -84,7 +89,7 @@ libtint_source_set("text") {
+     sources += [ "styled_text_printer_posix.cc" ]
+   }
+ 
+-  if (tint_build_is_win) {
++  if (_tint_win) {
+     sources += [ "styled_text_printer_windows.cc" ]
+   }
+ }
 diff --git a/third_party/dawn/src/utils/platform.h b/third_party/dawn/src/utils/platform.h
 index 4dd58a4..2715837 100644
 --- a/third_party/dawn/src/utils/platform.h
@@ -16289,6 +17389,18 @@ index 1370a08..521dd68 100644
  }
  
  /**
+diff --git a/third_party/flac/BUILD.gn b/third_party/flac/BUILD.gn
+index ac133db..7391668 100644
+--- a/third_party/flac/BUILD.gn
++++ b/third_party/flac/BUILD.gn
+@@ -27,6 +27,7 @@ config("flac_private_config") {
+ }
+ 
+ source_set("flac") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "include/FLAC/all.h",
+     "include/FLAC/assert.h",
 diff --git a/third_party/freetype/include/freetype-custom/freetype/config/ftoption.h b/third_party/freetype/include/freetype-custom/freetype/config/ftoption.h
 index 7d4e201..dd6bf49 100644
 --- a/third_party/freetype/include/freetype-custom/freetype/config/ftoption.h
@@ -16336,6 +17448,57 @@ index ab71414..d5e33c6 100644
      return sysinfo.dwNumberOfProcessors;
    }
    return max_threads;
+diff --git a/third_party/google_benchmark/BUILD.gn b/third_party/google_benchmark/BUILD.gn
+index 6d1e9b1..ad05c7b 100644
+--- a/third_party/google_benchmark/BUILD.gn
++++ b/third_party/google_benchmark/BUILD.gn
+@@ -11,6 +11,7 @@ config("benchmark_config") {
+ }
+ 
+ component("google_benchmark") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+ 
+   public = [
+diff --git a/third_party/google_benchmark/src/src/cycleclock.h b/third_party/google_benchmark/src/src/cycleclock.h
+index f383b3d..219bd10 100644
+--- a/third_party/google_benchmark/src/src/cycleclock.h
++++ b/third_party/google_benchmark/src/src/cycleclock.h
+@@ -45,6 +45,10 @@ extern "C" uint64_t __rdtsc();
+ #pragma intrinsic(__rdtsc)
+ #endif
+ 
++#if defined(BENCHMARK_OS_WINDOWS) && !defined(BENCHMARK_OS_MINGW) && \
++    defined(__ARM_ARCH) && !defined(__aarch64__)
++#include <windows.h>  // QueryPerformanceCounter (32-bit ARM Windows).
++#endif
+ #if !defined(BENCHMARK_OS_WINDOWS) || defined(BENCHMARK_OS_MINGW)
+ #include <sys/time.h>
+ #include <time.h>
+@@ -153,6 +157,11 @@ inline BENCHMARK_ALWAYS_INLINE int64_t Now() {
+   int64_t virtual_timer_value;
+   asm volatile("mrs %0, cntvct_el0" : "=r"(virtual_timer_value));
+   return virtual_timer_value;
++#elif defined(BENCHMARK_OS_WINDOWS) && defined(__ARM_ARCH)
++  // 32-bit ARM Windows (Windows Phone 8.1) has no gettimeofday().
++  LARGE_INTEGER now;
++  QueryPerformanceCounter(&now);
++  return static_cast<int64_t>(now.QuadPart);
+ #elif defined(__ARM_ARCH)
+   // V6 is the earliest arch that has a standard cyclecount
+   // Native Client validator doesn't allow MRC instructions.
+diff --git a/third_party/googletest/BUILD.gn b/third_party/googletest/BUILD.gn
+index 796ca60..64f52df 100644
+--- a/third_party/googletest/BUILD.gn
++++ b/third_party/googletest/BUILD.gn
+@@ -64,6 +64,7 @@ config("gmock_config") {
+ # Do NOT depend on this directly. Use //testing/gtest instead.
+ # See README.chromium for details.
+ source_set("gtest") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "custom/gtest/internal/custom/gtest.h",
 diff --git a/third_party/harfbuzz/src/src/hb-ot-layout-common.hh b/third_party/harfbuzz/src/src/hb-ot-layout-common.hh
 index 7b4754a..6ce6ca8 100644
 --- a/third_party/harfbuzz/src/src/hb-ot-layout-common.hh
@@ -17098,6 +18261,18 @@ index 56e7a4b..cdd578d 100644
  #ifndef NO_GETENV
  
  #ifdef _MSC_VER
+diff --git a/third_party/libphonenumber/BUILD.gn b/third_party/libphonenumber/BUILD.gn
+index 454ec5b..ced1a4c 100644
+--- a/third_party/libphonenumber/BUILD.gn
++++ b/third_party/libphonenumber/BUILD.gn
+@@ -38,6 +38,7 @@ config("libphonenumber_config_internal") {
+ }
+ 
+ static_library("libphonenumber_without_metadata") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "src/cpp/src/phonenumbers/alternate_format.cc",
+     "src/cpp/src/phonenumbers/asyoutypeformatter.cc",
 diff --git a/third_party/libvpx/BUILD.gn b/third_party/libvpx/BUILD.gn
 index 9a94190..8e8a27f 100644
 --- a/third_party/libvpx/BUILD.gn
@@ -19475,6 +20650,87 @@ index 6a39d31..1f79c26 100644
  }
  
  // Mutex
+diff --git a/third_party/libxml/BUILD.gn b/third_party/libxml/BUILD.gn
+index b435302..5390071 100644
+--- a/third_party/libxml/BUILD.gn
++++ b/third_party/libxml/BUILD.gn
+@@ -137,6 +137,8 @@ static_library("libxml_utils") {
+ }
+ 
+ static_library("libxml") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
++
+   # Do not expand this visibility list without first consulting with the
+   # Security Team.
+   visibility = [
+diff --git a/third_party/libxslt/BUILD.gn b/third_party/libxslt/BUILD.gn
+index 6460d87..ee976c8 100644
+--- a/third_party/libxslt/BUILD.gn
++++ b/third_party/libxslt/BUILD.gn
+@@ -27,6 +27,7 @@ config("libxslt_warnings") {
+ }
+ 
+ static_library("libxslt") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "src/libxslt/attributes.c",
+     "src/libxslt/attributes.h",
+diff --git a/third_party/libzip/BUILD.gn b/third_party/libzip/BUILD.gn
+index 6e351d8..c2f1032 100644
+--- a/third_party/libzip/BUILD.gn
++++ b/third_party/libzip/BUILD.gn
+@@ -23,6 +23,7 @@ source_set("libzip_public_headers") {
+ }
+ 
+ static_library("libzip") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "src/config.h",
+     "src/lib/zip.h",
+diff --git a/third_party/litert/BUILD.gn b/third_party/litert/BUILD.gn
+index 1ec7282..de127be 100644
+--- a/third_party/litert/BUILD.gn
++++ b/third_party/litert/BUILD.gn
+@@ -505,6 +505,7 @@ tflite_static_library("litert_c") {
+   conditional_deps = [ ":litert_toml_parser" ]
+   configs_to_remove = [ "//build/config/compiler:chromium_code" ]
+   configs_to_add = [ "//build/config/compiler:no_chromium_code" ]
++  configs_to_add += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":*",
+     "//components/optimization_guide/internal/*",
+@@ -526,6 +527,7 @@ tflite_static_library("litert_compiler") {
+ 
+   configs_to_remove = [ "//build/config/compiler:chromium_code" ]
+   configs_to_add = [ "//build/config/compiler:no_chromium_code" ]
++  configs_to_add += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ ":*" ]
+ }
+ 
+@@ -553,6 +555,7 @@ tflite_static_library("litert_runtime_accelerators") {
+   deps = [ ":litert_headers" ]
+   configs_to_remove = [ "//build/config/compiler:chromium_code" ]
+   configs_to_add = [ "//build/config/compiler:no_chromium_code" ]
++  configs_to_add += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ ":*" ]
+ }
+ 
+@@ -618,6 +621,7 @@ tflite_static_library("litert_core") {
+     "//build/config/compiler:no_chromium_code",
+     "//build/config/compiler:rtti",
+   ]
++  configs_to_add += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [ ":*" ]
+ }
+ 
+@@ -674,6 +678,7 @@ tflite_static_library("litert_runtime") {
+     "//build/config/compiler:no_chromium_code",
+     "//build/config/compiler:rtti",
+   ]
++  configs_to_add += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":*",
+     "//third_party/tflite:*",
 diff --git a/third_party/perfetto/BUILD.gn b/third_party/perfetto/BUILD.gn
 index 611a282..850637a 100644
 --- a/third_party/perfetto/BUILD.gn
@@ -19530,20 +20786,21 @@ index 91a7a5c..79dac96 100644
  
  perfetto_build_standalone =
 diff --git a/third_party/perfetto/src/base/BUILD.gn b/third_party/perfetto/src/base/BUILD.gn
-index 28aba7b..bbf70b8 100644
+index 28aba7b..abf3ca7 100644
 --- a/third_party/perfetto/src/base/BUILD.gn
 +++ b/third_party/perfetto/src/base/BUILD.gn
-@@ -21,7 +21,8 @@ import("../../gn/wasm.gni")
+@@ -20,8 +20,8 @@ import("../../gn/wasm.gni")
+ 
  # On standalone builds this is all the OSes we support. On chromium builds,
  # though, this really means !is_fuchsia && !is_nacl.
- _subprocess_supported =
+-_subprocess_supported =
 -    is_linux || is_chromeos || is_android || is_mac || is_win || is_freebsd
-+    is_linux || is_chromeos || is_android || is_mac ||
-+    (is_win && current_os != "winuwp") || is_freebsd
++_subprocess_supported = is_linux || is_chromeos || is_android || is_mac ||
++                        (is_win && current_os != "winuwp") || is_freebsd
  
  perfetto_component("base") {
    deps = [
-@@ -75,6 +76,15 @@ perfetto_component("base") {
+@@ -75,6 +75,15 @@ perfetto_component("base") {
      "weak_runner.cc",
    ]
  
@@ -19559,6 +20816,14 @@ index 28aba7b..bbf70b8 100644
    if (!is_nacl) {
      sources += [
        "lock_free_task_runner.cc",
+@@ -190,6 +199,7 @@ if (enable_perfetto_ipc) {
+ }
+ 
+ source_set("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   deps = [
+     ":base",
 diff --git a/third_party/perfetto/src/base/android_utils.cc b/third_party/perfetto/src/base/android_utils.cc
 index caa464b..d997da0 100644
 --- a/third_party/perfetto/src/base/android_utils.cc
@@ -20057,6 +21322,18 @@ index 3b29647..682a903 100644
  #elif PERFETTO_BUILDFLAG(PERFETTO_OS_FREEBSD)
    char buf[PATH_MAX];
    int mib[4], ret;
+diff --git a/third_party/perfetto/src/trace_processor/BUILD.gn b/third_party/perfetto/src/trace_processor/BUILD.gn
+index 2fe3ede..2fcf33c 100644
+--- a/third_party/perfetto/src/trace_processor/BUILD.gn
++++ b/third_party/perfetto/src/trace_processor/BUILD.gn
+@@ -173,6 +173,7 @@ source_set("storage_minimal") {
+ 
+ if (enable_perfetto_trace_processor_sqlite) {
+   source_set("lib") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     sources = [
+       "iterator_impl.cc",
+       "iterator_impl.h",
 diff --git a/third_party/perfetto/src/tracing/platform_windows.cc b/third_party/perfetto/src/tracing/platform_windows.cc
 index d4ff310..abb4983 100644
 --- a/third_party/perfetto/src/tracing/platform_windows.cc
@@ -21076,6 +22353,18 @@ index abdf565..eda9867 100644
      if (module != NULL) {
        return (FnGetSystemTimePreciseAsFileTime)GetProcAddress(
            module, "GetSystemTimePreciseAsFileTime");
+diff --git a/third_party/tflite_support/BUILD.gn b/third_party/tflite_support/BUILD.gn
+index 8f7a9a5..47254a3 100644
+--- a/third_party/tflite_support/BUILD.gn
++++ b/third_party/tflite_support/BUILD.gn
+@@ -64,6 +64,7 @@ flatbuffer("metadata_schema") {
+ }
+ 
+ static_library("tflite_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   _configs = configs
+   configs = []
+   configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
 diff --git a/third_party/webrtc/common_audio/BUILD.gn b/third_party/webrtc/common_audio/BUILD.gn
 index 04c7aaa..36923af 100644
 --- a/third_party/webrtc/common_audio/BUILD.gn
@@ -21541,6 +22830,42 @@ index cc8e3e0..88aecd1 100644
        if (DWORD len = FormatMessageA(
                flags, hmod, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                msgbuf, sizeof(msgbuf) / sizeof(msgbuf[0]), NULL)) {
+diff --git a/third_party/win_virtual_display/controller/BUILD.gn b/third_party/win_virtual_display/controller/BUILD.gn
+index 40a231d..68a6bec 100644
+--- a/third_party/win_virtual_display/controller/BUILD.gn
++++ b/third_party/win_virtual_display/controller/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ static_library("controller") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   deps = [
+     "//base",
+diff --git a/third_party/win_virtual_display/driver/public/BUILD.gn b/third_party/win_virtual_display/driver/public/BUILD.gn
+index 9d68562..bfae56f 100644
+--- a/third_party/win_virtual_display/driver/public/BUILD.gn
++++ b/third_party/win_virtual_display/driver/public/BUILD.gn
+@@ -6,6 +6,7 @@
+ # for this shared public file which is shared between the driver and client
+ # code which * is * built with ninja.
+ source_set("public") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "properties.cc",
+     "properties.h",
+diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
+index 29248e1..3f61d7d 100644
+--- a/third_party/zlib/BUILD.gn
++++ b/third_party/zlib/BUILD.gn
+@@ -389,6 +389,7 @@ config("minizip_warnings") {
+ }
+ 
+ static_library("minizip") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   include_dirs = [
+     ".",
+     "//third_party/zlib",
 diff --git a/third_party/zlib/cpu_features.c b/third_party/zlib/cpu_features.c
 index 6613a65..9f74857 100644
 --- a/third_party/zlib/cpu_features.c
@@ -21554,6 +22879,18 @@ index 6613a65..9f74857 100644
      arm_cpu_enable_crc32 = IsProcessorFeaturePresent(PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE);
      arm_cpu_enable_pmull = IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE);
  #elif defined(ARMV8_OS_IOS)
+diff --git a/third_party/zlib/google/BUILD.gn b/third_party/zlib/google/BUILD.gn
+index 122cef5..3a80e4b 100644
+--- a/third_party/zlib/google/BUILD.gn
++++ b/third_party/zlib/google/BUILD.gn
+@@ -10,6 +10,7 @@ if (build_with_chromium && is_ios) {
+ 
+ if (build_with_chromium) {
+   static_library("zip") {
++    configs += [ "//build/config/win:phone81_desktop_declarations" ]
+     sources = [
+       "redact.h",
+       "zip.cc",
 diff --git a/tools/perf/chrome_telemetry_build/BUILD.gn b/tools/perf/chrome_telemetry_build/BUILD.gn
 index f353476..7de9bb8 100644
 --- a/tools/perf/chrome_telemetry_build/BUILD.gn
@@ -21568,7 +22905,7 @@ index f353476..7de9bb8 100644
    }
  
 diff --git a/ui/base/BUILD.gn b/ui/base/BUILD.gn
-index d49ede6..c6b595a 100644
+index d49ede6..aaaabbf 100644
 --- a/ui/base/BUILD.gn
 +++ b/ui/base/BUILD.gn
 @@ -125,6 +125,7 @@ source_set("webui_resource_path") {
@@ -21587,6 +22924,14 @@ index d49ede6..c6b595a 100644
    defines = [ "IS_UI_BASE_DATA_EXCHANGE_IMPL" ]
  
    sources = [
+@@ -780,6 +782,7 @@ if (is_android) {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "data_transfer_policy/mock_data_transfer_policy_controller.cc",
 diff --git a/ui/base/clipboard/BUILD.gn b/ui/base/clipboard/BUILD.gn
 index 793c31c..38f9496 100644
 --- a/ui/base/clipboard/BUILD.gn
@@ -21619,6 +22964,18 @@ index 7a7872f..8f52e7d 100644
    output_name = "ui_base_dragdrop_types"
    sources = [
      "drag_drop_types.cc",
+diff --git a/ui/base/emoji/BUILD.gn b/ui/base/emoji/BUILD.gn
+index 1a66ada..de94b02 100644
+--- a/ui/base/emoji/BUILD.gn
++++ b/ui/base/emoji/BUILD.gn
+@@ -11,6 +11,7 @@ if (is_mac) {
+ }
+ 
+ component("emoji") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_emoji"
+ 
+   defines = [ "IS_UI_BASE_EMOJI_IMPL" ]
 diff --git a/ui/base/idle/BUILD.gn b/ui/base/idle/BUILD.gn
 index 87294b0..9e2a3b3 100644
 --- a/ui/base/idle/BUILD.gn
@@ -21814,7 +23171,7 @@ index ee30b95..e0cd932 100644
                             const ColorProviderKey& key) {}
  #endif
 diff --git a/ui/display/BUILD.gn b/ui/display/BUILD.gn
-index 6f419c1..b4d68aa 100644
+index 6f419c1..5a88860 100644
 --- a/ui/display/BUILD.gn
 +++ b/ui/display/BUILD.gn
 @@ -3,6 +3,7 @@
@@ -21859,6 +23216,14 @@ index 6f419c1..b4d68aa 100644
    }
  
    if (is_ios) {
+@@ -197,6 +225,7 @@ if (is_chromeos) {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "test/display_matchers.cc",
 diff --git a/ui/display/win/audio_edid_scan_phone.cc b/ui/display/win/audio_edid_scan_phone.cc
 new file mode 100644
 index 0000000..1370dc9
@@ -21918,7 +23283,7 @@ index cc5dd4e..b370525 100644
  
  float GetUnforcedDeviceScaleFactor() {
 diff --git a/ui/events/BUILD.gn b/ui/events/BUILD.gn
-index cc26741..09d7a63 100644
+index cc26741..6af92dc 100644
 --- a/ui/events/BUILD.gn
 +++ b/ui/events/BUILD.gn
 @@ -40,6 +40,7 @@ static_library("dom_keycode_converter") {
@@ -21953,6 +23318,14 @@ index cc26741..09d7a63 100644
    public = [ "keyboard_hook.h" ]
  
    defines = [ "IS_KEYBOARD_HOOK_IMPL" ]
+@@ -593,6 +597,7 @@ component("velocity_tracker") {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "test/event_generator.cc",
+     "test/event_generator.h",
 diff --git a/ui/gfx/BUILD.gn b/ui/gfx/BUILD.gn
 index 6275eea..763becd 100644
 --- a/ui/gfx/BUILD.gn
@@ -22730,7 +24103,7 @@ index 6497acc..5da2644 100644
  #include <string>
  
 diff --git a/ui/gl/BUILD.gn b/ui/gl/BUILD.gn
-index a89e6c2..91c5b29 100644
+index a89e6c2..6d53d82 100644
 --- a/ui/gl/BUILD.gn
 +++ b/ui/gl/BUILD.gn
 @@ -7,6 +7,7 @@ import("//build/config/chrome_build.gni")
@@ -22785,6 +24158,22 @@ index a89e6c2..91c5b29 100644
      if (!use_static_angle) {
        data_deps += [
          "//third_party/angle:libEGL",
+@@ -498,6 +514,7 @@ if (is_mac) {
+ }
+ 
+ static_library("gl_unittest_utils") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "egl_bindings_autogen_mock.cc",
+@@ -530,6 +547,7 @@ static_library("gl_unittest_utils") {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "test/gl_surface_test_support.cc",
 diff --git a/ui/gl/direct_composition_support.cc b/ui/gl/direct_composition_support.cc
 index 57ec9b6..4845058 100644
 --- a/ui/gl/direct_composition_support.cc

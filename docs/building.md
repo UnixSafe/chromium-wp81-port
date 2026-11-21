@@ -53,10 +53,30 @@ DEPOT_TOOLS_WIN_TOOLCHAIN=1 ninja -C out/phone81-arm -j8 \
   obj/base/base/waitable_event_win.obj
 ```
 
+### Linking
+
+Phone executables and DLLs link the Visual C++ 2013 Store CRT rather than the
+newer CRT whose headers the code is compiled with. Install Visual Studio 2013's
+Windows Phone ARM libraries locally (never redistribute them) and point GN at
+their `VC/lib/store/arm` directory, through a path without spaces:
+
+```gn
+phone81_vc120_store_lib_dir = "/abs/path/vc120/store-arm"
+# Optional: empty archives named after desktop import libraries that some
+# targets still list (advapi32.lib...), so their symbols show up as
+# unresolved instead of the link stopping on a missing file.
+phone81_desktop_stub_lib_dir = "/abs/path/desktop-stub-libs/arm"
+```
+
+`//build/win/phone81:crt_compat` supplies the newer-CRT entry points on top of
+VC120. Check every linked image with `llvm-readobj --file-headers
+--coff-imports`: it must show subsystem 6.3, the AppContainer flag, and only
+`msvcr120_app.dll` plus DLLs that the phone provides.
+
 `out/phone81-arm/args.gn` must be set before `gn gen`; see
 [`progress.md`](progress.md) for the exact local experiment and remaining
-blockers. A full build still lacks a compatible runtime link, a `CoreWindow`
-rendering path, an APPX package, and device validation.
+blockers. A full build still lacks a linked browser executable, a validated
+`CoreWindow` rendering path, an APPX package, and device validation.
 
 ## Checking Phone SDK imports
 

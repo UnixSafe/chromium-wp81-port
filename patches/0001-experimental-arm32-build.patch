@@ -6365,6 +6365,33 @@ index 0666c02..40bebd8 100644
    }
  
    if (use_aura) {
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index 654641b..88253b0 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -215,7 +215,11 @@
+ #if BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ 
++#include "base/win/windows_phone_8_1.h"
++
++#if !BASE_WIN_IS_PHONE_8_1
+ #include <commctrl.h>
++#endif
+ #include <shellapi.h>
+ 
+ #include "content/public/browser/child_process_launcher_utils.h"
+@@ -1646,7 +1650,9 @@ bool BrowserMainLoop::InitializeToolkit() {
+   // (Need to add InitializeToolkit stage to BrowserParts).
+   // See also GTK setup in EarlyInitialization, above, and associated comments.
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
++  // Windows Phone 8.1 has no comctl32; the CoreWindow shell draws its own
++  // controls, so only the desktop toolkit needs the common control classes.
+   INITCOMMONCONTROLSEX config;
+   config.dwSize = sizeof(config);
+   config.dwICC = ICC_WIN95_CLASSES;
 diff --git a/content/browser/browser_main_runner_impl.cc b/content/browser/browser_main_runner_impl.cc
 index 485e4cb..c3e12ab 100644
 --- a/content/browser/browser_main_runner_impl.cc
@@ -6679,10 +6706,10 @@ index b4c91f7..828da70 100644
      std::string process_type =
 diff --git a/content/shell/app/shell_main_winuwp.cc b/content/shell/app/shell_main_winuwp.cc
 new file mode 100644
-index 0000000..7a69a58
+index 0000000..810fa3c
 --- /dev/null
 +++ b/content/shell/app/shell_main_winuwp.cc
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,167 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -6775,6 +6802,9 @@ index 0000000..7a69a58
 +    }
 +    command_line->AppendSwitch(switches::kSingleProcess);
 +    command_line->AppendSwitch("disable-gpu");
++    // Use the CPU compositor directly instead of probing WARP/SwiftShader.
++    // The shell presenter keeps its own D3D11 device for the CoreWindow.
++    command_line->AppendSwitch(switches::kDisableSoftwareRasterizer);
 +    // This AppContainer hosts the browser and all content threads. There are
 +    // no child processes for Chromium's desktop sandbox broker to launch.
 +    sandbox::SandboxInterfaceInfo sandbox_info{};
@@ -12061,6 +12091,40 @@ index b71b935..2e7485e 100644
  }
  
  
+diff --git a/third_party/libc++/src/include/__ostream/basic_ostream.h b/third_party/libc++/src/include/__ostream/basic_ostream.h
+index 43c9399..126fd24 100644
+--- a/third_party/libc++/src/include/__ostream/basic_ostream.h
++++ b/third_party/libc++/src/include/__ostream/basic_ostream.h
+@@ -37,6 +37,15 @@
+ #    pragma GCC system_header
+ #  endif
+ 
++#  if defined(WINUWP_8_1)
++// The VC120 Store runtime (msvcr120_app.dll) has no C++17 uncaught-exception
++// counter. It exports the boolean predicate under this C++ decorated name;
++// the modern CRT headers declare a C-linkage function with the same plain
++// name, so bind the decorated import explicitly. Only the sentry below uses
++// it, because it needs exactly "no exception in flight".
++__declspec(dllimport) bool __cdecl __libcpp_phone_uncaught_exception() __asm__("?__uncaught_exception@@YA_NXZ");
++#  endif
++
+ _LIBCPP_PUSH_MACROS
+ #  include <__undef_macros>
+ 
+@@ -208,7 +217,12 @@ basic_ostream<_CharT, _Traits>::sentry::sentry(basic_ostream<_CharT, _Traits>& _
+ 
+ template <class _CharT, class _Traits>
+ basic_ostream<_CharT, _Traits>::sentry::~sentry() {
+-  if (__os_.rdbuf() && __os_.good() && (__os_.flags() & ios_base::unitbuf) && uncaught_exceptions() == 0) {
++  if (__os_.rdbuf() && __os_.good() && (__os_.flags() & ios_base::unitbuf) &&
++#  if defined(WINUWP_8_1)
++      !::__libcpp_phone_uncaught_exception()) {
++#  else
++      uncaught_exceptions() == 0) {
++#  endif
+ #  if _LIBCPP_HAS_EXCEPTIONS
+     try {
+ #  endif // _LIBCPP_HAS_EXCEPTIONS
 diff --git a/third_party/libjpeg_turbo/src/jinclude.h b/third_party/libjpeg_turbo/src/jinclude.h
 index 56e7a4b..cdd578d 100644
 --- a/third_party/libjpeg_turbo/src/jinclude.h

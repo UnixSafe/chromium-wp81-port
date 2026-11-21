@@ -21066,6 +21066,64 @@ index ac862c6..4f0c96a 100644
      sources += [ "spl_sqrt_floor_arm.S" ]
  
      deps += [ "../../../rtc_base/system:asm_defines" ]
+diff --git a/third_party/webrtc/modules/desktop_capture/BUILD.gn b/third_party/webrtc/modules/desktop_capture/BUILD.gn
+index f0cf323..21375e9 100644
+--- a/third_party/webrtc/modules/desktop_capture/BUILD.gn
++++ b/third_party/webrtc/modules/desktop_capture/BUILD.gn
+@@ -752,8 +752,11 @@ rtc_library("desktop_capture") {
+     ]
+   }
+ 
+-  if (!is_win && !is_mac && !rtc_use_x11_extensions && !rtc_use_pipewire &&
+-      !is_fuchsia) {
++  # Windows Store/Phone (winuwp) has no desktop capture APIs, like other
++  # platforms where rtc_desktop_capture_supported is false.
++  _desktop_capture_win = is_win && current_os != "winuwp"
++  if (!_desktop_capture_win && !is_mac && !rtc_use_x11_extensions &&
++      !rtc_use_pipewire && !is_fuchsia) {
+     sources += [
+       "mouse_cursor_monitor_null.cc",
+       "screen_capturer_null.cc",
+@@ -799,7 +802,7 @@ rtc_library("desktop_capture") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (_desktop_capture_win) {
+     sources += [
+       "cropping_window_capturer_win.cc",
+       "desktop_frame_win.cc",
+diff --git a/third_party/webrtc/modules/desktop_capture/full_screen_window_detector.cc b/third_party/webrtc/modules/desktop_capture/full_screen_window_detector.cc
+index 3f0baf6..10b21f8 100644
+--- a/third_party/webrtc/modules/desktop_capture/full_screen_window_detector.cc
++++ b/third_party/webrtc/modules/desktop_capture/full_screen_window_detector.cc
+@@ -17,7 +17,7 @@
+ #include "modules/desktop_capture/full_screen_application_handler.h"
+ #include "rtc_base/time_utils.h"
+ 
+-#if defined(WEBRTC_WIN)
++#if defined(WEBRTC_WIN) && !defined(WINUWP)  // No HWND windows in Store/Phone apps.
+ #include "modules/desktop_capture/win/full_screen_win_application_handler.h"
+ #endif
+ 
+@@ -82,7 +82,7 @@ void FullScreenWindowDetector::UpdateWindowListIfNeeded(
+     last_update_time_ms_ = TimeMillis();
+ 
+     bool should_swap_windows = true;
+-#if defined(WEBRTC_WIN)
++#if defined(WEBRTC_WIN) && !defined(WINUWP)  // No HWND windows in Store/Phone apps.
+     bool is_original_source_window_alive =
+         ::IsWindow(reinterpret_cast<HWND>(original_source_id));
+     bool is_original_source_enumerated = false;
+@@ -134,7 +134,7 @@ void FullScreenWindowDetector::CreateFullScreenApplicationHandlerForTest(
+   if (app_handler_) {
+     return;
+   }
+-#if defined(WEBRTC_WIN)
++#if defined(WEBRTC_WIN) && !defined(WINUWP)  // No HWND windows in Store/Phone apps.
+   app_handler_ = std::make_unique<FullScreenPowerPointHandler>(source_id);
+   app_handler_->SetSlideShowCreationStateForTest(
+       fullscreen_slide_show_started_after_capture_start);
 diff --git a/third_party/webrtc/rtc_base/async_dns_resolver.cc b/third_party/webrtc/rtc_base/async_dns_resolver.cc
 index 1353059..bbbdcf5 100644
 --- a/third_party/webrtc/rtc_base/async_dns_resolver.cc
@@ -21163,6 +21221,21 @@ index 6edd2c7..215311e 100644
  #if defined(WEBRTC_POSIX)
  #include <arpa/inet.h>
  #endif  // defined(WEBRTC_POSIX)
+diff --git a/third_party/webrtc/rtc_base/net_test_helpers.cc b/third_party/webrtc/rtc_base/net_test_helpers.cc
+index 91ad839..5301019 100644
+--- a/third_party/webrtc/rtc_base/net_test_helpers.cc
++++ b/third_party/webrtc/rtc_base/net_test_helpers.cc
+@@ -12,7 +12,9 @@
+ 
+ #include "rtc_base/net_helpers.h"
+ 
+-#if defined(WEBRTC_WIN)
++#if defined(WEBRTC_WIN) && !defined(WINUWP)
++// WSCEnumProtocols (ws2spi.h) is desktop-only; HasIPv6Enabled() needs it
++// only outside WINUWP.
+ #include <ws2spi.h>
+ #include <ws2tcpip.h>
+ 
 diff --git a/third_party/webrtc/rtc_base/network.cc b/third_party/webrtc/rtc_base/network.cc
 index 9c5818a..6b858a0 100644
 --- a/third_party/webrtc/rtc_base/network.cc

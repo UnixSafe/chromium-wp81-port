@@ -33,7 +33,7 @@ python3 tools/create-phone81-sysroot.py \
 
 Generate a `winuwp` ARM graph using `target_winuwp_version="8.1"` and
 `target_winuwp_family="phone"`, and set `phone81_port=true` and
-`skia_use_dawn=false` for the Phone probe. Also set `angle_enable_d3d11=false`, `enable_swiftshader=false`, `enable_swiftshader_vulkan=false`, `dawn_use_swiftshader=false` `enable_libaom=false` (AV1 decoding stays on dav1d), `v8_enable_etw_stack_walking=false`, `v8_enable_system_instrumentation=false` and `wp81_linux_v8_tools="//out/wp81-snapshot-linuxhost/clang_x86_v8_arm"` (the Linux IA32 V8 generators): the Phone 8.1 SDK has no `d3d11_3.h`, and the Phone graph keeps only ANGLE's Null backend and no SwiftShader (the shell runs with `--disable-gpu`, `--disable-software-rasterizer` and a CPU compositor). Disable precompiled headers and Control Flow
+`skia_use_dawn=false` for the Phone probe. Also set `angle_enable_d3d11=false`, `enable_swiftshader=false`, `enable_swiftshader_vulkan=false`, `dawn_use_swiftshader=false` `enable_libaom=false` (AV1 decoding stays on dav1d), `v8_enable_etw_stack_walking=false`, `v8_enable_system_instrumentation=false`, `rtc_enable_win_wgc=false` and `wp81_linux_v8_tools="//out/wp81-snapshot-linuxhost/clang_x86_v8_arm"` (the Linux IA32 V8 generators): the Phone 8.1 SDK has no `d3d11_3.h`, and the Phone graph keeps only ANGLE's Null backend and no SwiftShader (the shell runs with `--disable-gpu`, `--disable-software-rasterizer` and a CPU compositor). Disable precompiled headers and Control Flow
 Guard for this target. Set `CHROMIUM_PHONE81_SDK=1`,
 `CHROMIUM_XWIN_SYSROOT=1`, `WINDOWSSDKDIR` and `GYP_MSVS_OVERRIDE_PATH` to the
 overlay path, and `DEPOT_TOOLS_WIN_TOOLCHAIN=1` for **both** `gn gen` and Ninja:

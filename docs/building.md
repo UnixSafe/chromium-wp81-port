@@ -33,7 +33,7 @@ python3 tools/create-phone81-sysroot.py \
 
 Generate a `winuwp` ARM graph using `target_winuwp_version="8.1"` and
 `target_winuwp_family="phone"`, and set `phone81_port=true` and
-`skia_use_dawn=false` for the Phone probe. Disable precompiled headers and Control Flow
+`skia_use_dawn=false` for the Phone probe. Also set `angle_enable_d3d11=false` and `angle_enable_d3d9=false`: the Phone 8.1 SDK has no `d3d11_3.h`, and the Phone graph keeps only ANGLE's Null backend (the shell runs with `--disable-gpu` and a CPU compositor). Disable precompiled headers and Control Flow
 Guard for this target. Set `CHROMIUM_PHONE81_SDK=1`,
 `CHROMIUM_XWIN_SYSROOT=1`, `WINDOWSSDKDIR` and `GYP_MSVS_OVERRIDE_PATH` to the
 overlay path, and `DEPOT_TOOLS_WIN_TOOLCHAIN=1` for **both** `gn gen` and Ninja:

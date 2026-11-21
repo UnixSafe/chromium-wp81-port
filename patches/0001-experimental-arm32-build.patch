@@ -6222,6 +6222,53 @@ index 7a26f81..c00a9c8 100644
  #elif BUILDFLAG(IS_POSIX)
      base::stat_wrapper_t stat_info;
      if (base::File::Fstat(file.GetPlatformFile(), &stat_info) != 0) {
+diff --git a/components/system_cpu/BUILD.gn b/components/system_cpu/BUILD.gn
+index 8d4f59b..fc90349 100644
+--- a/components/system_cpu/BUILD.gn
++++ b/components/system_cpu/BUILD.gn
+@@ -2,6 +2,8 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
++
+ source_set("system_cpu") {
+   sources = [
+     "cpu_probe.cc",
+@@ -42,7 +44,7 @@ source_set("system_cpu") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !(current_os == "winuwp" && phone81_port)) {
+     sources += [
+       "cpu_probe_win.cc",
+       "cpu_probe_win.h",
+diff --git a/components/system_cpu/cpu_probe.cc b/components/system_cpu/cpu_probe.cc
+index 4c9bdb9..e198cec 100644
+--- a/components/system_cpu/cpu_probe.cc
++++ b/components/system_cpu/cpu_probe.cc
+@@ -15,7 +15,10 @@
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+ #include "components/system_cpu/cpu_probe_linux.h"
+ #elif BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "components/system_cpu/cpu_probe_win.h"
++#endif
+ #elif BUILDFLAG(IS_MAC)
+ #include "components/system_cpu/cpu_probe_mac.h"
+ #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+@@ -26,6 +29,9 @@ namespace system_cpu {
+ std::unique_ptr<CpuProbe> CpuProbe::Create() {
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   return CpuProbeLinux::Create();
++#elif BUILDFLAG(IS_WIN) && BASE_WIN_IS_PHONE_8_1
++  // PDH performance counters are unavailable to Phone 8.1 apps.
++  return nullptr;
+ #elif BUILDFLAG(IS_WIN)
+   return CpuProbeWin::Create();
+ #elif BUILDFLAG(IS_MAC)
 diff --git a/components/tracing/BUILD.gn b/components/tracing/BUILD.gn
 index 74237ca..85823f4 100644
 --- a/components/tracing/BUILD.gn
@@ -6475,6 +6522,67 @@ index ee81a45..e53ffd8 100644
      // TODO(jessemckenna): replace this with
      // `tracing::AdaptPerfettoConfigForChrome()`, to make sure all
      // Chrome-specific config adaptations are applied.
+diff --git a/content/browser/gpu/gpu_data_manager_impl_private.cc b/content/browser/gpu/gpu_data_manager_impl_private.cc
+index 3f109c6..b388c1c 100644
+--- a/content/browser/gpu/gpu_data_manager_impl_private.cc
++++ b/content/browser/gpu/gpu_data_manager_impl_private.cc
+@@ -94,7 +94,10 @@
+ #endif  // BUILDFLAG(IS_MAC)
+ #if BUILDFLAG(IS_WIN)
+ #include "base/base_paths_win.h"
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "ui/display/win/screen_win.h"
++#endif
+ #include "ui/gfx/mojom/dxgi_info.mojom.h"
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+@@ -410,8 +413,10 @@ void CollectExtraDevicePerfInfo(const gpu::GPUInfo& gpu_info,
+ class HDRProxy {
+  public:
+   static void Initialize() {
++#if !BASE_WIN_IS_PHONE_8_1
+     display::win::GetScreenWin()->SetRequestHDRStatusCallback(
+         base::BindRepeating(&HDRProxy::RequestHDRStatus));
++#endif
+   }
+ 
+   static void RequestHDRStatus() {
+@@ -426,7 +431,10 @@ class HDRProxy {
+   }
+ 
+   static void GotResult(gfx::mojom::DXGIInfoPtr dxgi_info) {
++#if !BASE_WIN_IS_PHONE_8_1
++    // Phone 8.1 has no ScreenWin: the shell's display is SDR-only.
+     display::win::GetScreenWin()->SetDXGIInfo(std::move(dxgi_info));
++#endif
+   }
+ };
+ 
+diff --git a/content/browser/renderer_host/input/fling_scheduler.cc b/content/browser/renderer_host/input/fling_scheduler.cc
+index 2ce358d..d6aefc8 100644
+--- a/content/browser/renderer_host/input/fling_scheduler.cc
++++ b/content/browser/renderer_host/input/fling_scheduler.cc
+@@ -19,7 +19,10 @@
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+ #if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "ui/display/win/screen_win.h"
++#endif
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+ namespace content {
+@@ -76,7 +79,7 @@ bool FlingScheduler::ShouldUseMobileFlingCurve() {
+ 
+ gfx::Vector2dF FlingScheduler::GetPixelsPerInch(
+     const gfx::PointF& position_in_screen) {
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   return display::win::GetScreenWin()->GetPixelsPerInch(position_in_screen);
+ #else
+   return gfx::Vector2dF(input::kDefaultPixelsPerInch,
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
 index 1afecb8..9606c94 100644
 --- a/content/shell/BUILD.gn
@@ -11079,6 +11187,42 @@ index 0c59649..2c05e99 100644
    if (config->name() == "org.chromium.etw_system") {
      AddEtwStackSamplingDebugIds(config);
    }
+diff --git a/services/tracing/public/cpp/system_metrics_sampler.cc b/services/tracing/public/cpp/system_metrics_sampler.cc
+index d7be4ca..dc9760f 100644
+--- a/services/tracing/public/cpp/system_metrics_sampler.cc
++++ b/services/tracing/public/cpp/system_metrics_sampler.cc
+@@ -21,8 +21,12 @@
+ #if BUILDFLAG(IS_WIN)
+ #include <windows.h>
+ 
++#include "base/win/windows_phone_8_1.h"
++
++#if !BASE_WIN_IS_PHONE_8_1
+ // Psapi.h must come after Windows.h.
+ #include <psapi.h>
++#endif
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+ namespace tracing {
+@@ -120,6 +124,10 @@ void SystemMetricsSampler::SystemSampler::SampleSystemMetrics() {
+ 
+ #if BUILDFLAG(IS_WIN)
+ void SystemMetricsSampler::SystemSampler::SampleMemoryMetrics() {
++#if BASE_WIN_IS_PHONE_8_1
++  // GlobalMemoryStatusEx is reserved for desktop apps; report nothing.
++  return;
++#else
+   MEMORYSTATUSEX mem_status = {};
+   mem_status.dwLength = sizeof(mem_status);
+   if (!::GlobalMemoryStatusEx(&mem_status)) {
+@@ -139,6 +147,7 @@ void SystemMetricsSampler::SystemSampler::SampleMemoryMetrics() {
+                 perfetto::CounterTrack("AvailablePhysicalMemory",
+                                        perfetto::Track::Global(0)),
+                 mem_status.ullAvailPhys);
++#endif  // BASE_WIN_IS_PHONE_8_1
+ }
+ #endif  // BUILDFLAG(IS_WIN)
+ 
 diff --git a/services/tracing/public/cpp/trace_startup.cc b/services/tracing/public/cpp/trace_startup.cc
 index 81c71cf..053b099 100644
 --- a/services/tracing/public/cpp/trace_startup.cc
@@ -11612,10 +11756,22 @@ index 7a1236f..bf83823 100644
  }  // namespace time_internal
  ABSL_NAMESPACE_END
 diff --git a/third_party/angle/BUILD.gn b/third_party/angle/BUILD.gn
-index 5e8714b..ba30ba4 100644
+index 5e8714b..7debae9 100644
 --- a/third_party/angle/BUILD.gn
 +++ b/third_party/angle/BUILD.gn
-@@ -427,7 +427,7 @@ config("build_id_config") {
+@@ -4,6 +4,11 @@
+ 
+ # import the ozone_platform_x11 variable
+ import("gni/angle.gni")
++_angle_phone81 = false
++if (build_with_chromium) {
++  import("//build/config/win/phone81.gni")
++  _angle_phone81 = target_os == "winuwp" && phone81_port
++}
+ if (angle_enable_vulkan) {
+   import("//build_overrides//vulkan_headers.gni")
+ }
+@@ -427,7 +432,7 @@ config("build_id_config") {
    ldflags = [ "-Wl,--build-id" ]
  }
  
@@ -11624,6 +11780,207 @@ index 5e8714b..ba30ba4 100644
  
  if (_use_copy_compiler_dll) {
    copy("copy_compiler_dll") {
+@@ -442,7 +447,10 @@ config("includes_config") {
+ }
+ 
+ config("angle_uwp_env") {
+-  if (angle_is_winuwp && !angle_is_winappsdk) {
++  # A Chromium Windows Phone 8.1 build already compiles everything for
++  # WINAPI_FAMILY_PHONE_APP; forcing the PC family would select Store PC
++  # headers (such as winreg.h) that the Phone SDK does not ship.
++  if (angle_is_winuwp && !angle_is_winappsdk && !_angle_phone81) {
+     defines = [ "WINAPI_FAMILY=WINAPI_FAMILY_PC_APP" ]
+   }
+ }
+@@ -1040,7 +1048,9 @@ config("angle_backend_config") {
+     configs += [ "src/libANGLE/renderer/cl:angle_cl_backend_config" ]
+   }
+ 
+-  if (angle_is_winuwp) {
++  if (angle_is_winuwp && angle_enable_d3d11) {
++    # Phone 8.1 builds ANGLE without the D3D backends (its SDK has no
++    # d3d11_3.h); platform.h still defines ANGLE_ENABLE_WINDOWS_UWP there.
+     configs += [ "src/libANGLE/renderer/d3d:angle_enable_winuwp_config" ]
+   }
+ }
+@@ -1175,7 +1185,7 @@ angle_source_set("libANGLE_no_vulkan") {
+     public_deps += [ "src/libANGLE/renderer/wgpu:angle_wgpu_backend" ]
+   }
+ 
+-  if (angle_is_winuwp) {
++  if (angle_is_winuwp && angle_enable_d3d11) {
+     public_deps += [ "src/libANGLE/renderer/d3d:angle_enable_winuwp" ]
+   }
+ 
+diff --git a/third_party/angle/src/common/system_utils_win.cpp b/third_party/angle/src/common/system_utils_win.cpp
+index 74e9ed8..7a19288 100644
+--- a/third_party/angle/src/common/system_utils_win.cpp
++++ b/third_party/angle/src/common/system_utils_win.cpp
+@@ -15,6 +15,15 @@
+ #include <array>
+ #include <vector>
+ 
++// Windows Phone 8.1 apps run in a single package process: there is no
++// current directory, temp-file API, module file name or process-time query in
++// the Phone SDK. Those helpers report failure there instead of calling
++// desktop-only functions.
++#if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#    define ANGLE_WINDOWS_PHONE_8_1 1
++#endif
++
+ namespace angle
+ {
+ 
+@@ -23,10 +32,14 @@ namespace
+ 
+ std::string GetPath(HMODULE module)
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return "";
++#else
+     std::array<wchar_t, MAX_PATH> executableFileBuf;
+     DWORD executablePathLen = GetModuleFileNameW(module, executableFileBuf.data(),
+                                                  static_cast<DWORD>(executableFileBuf.size()));
+     return Narrow(executablePathLen > 0 ? executableFileBuf.data() : L"");
++#endif
+ }
+ 
+ std::string GetDirectory(HMODULE module)
+@@ -54,6 +67,9 @@ const char *GetSharedLibraryExtension()
+ 
+ Optional<std::string> GetCWD()
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return Optional<std::string>::Invalid();
++#else
+     std::array<wchar_t, MAX_PATH> pathBuf;
+     DWORD result = GetCurrentDirectoryW(static_cast<DWORD>(pathBuf.size()), pathBuf.data());
+     if (result == 0)
+@@ -61,11 +77,16 @@ Optional<std::string> GetCWD()
+         return Optional<std::string>::Invalid();
+     }
+     return Narrow(pathBuf.data());
++#endif
+ }
+ 
+ bool SetCWD(const char *dirName)
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return false;
++#else
+     return (SetCurrentDirectoryW(Widen(dirName).c_str()) == TRUE);
++#endif
+ }
+ 
+ const char *GetPathSeparatorForEnvironmentVar()
+@@ -91,6 +112,10 @@ uint64_t GetCurrentSystemTimeNs()
+ 
+ double GetCurrentProcessCpuTime()
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    // No GetProcessTimes for Phone apps; CPU-time tracing reports zero.
++    return 0.0;
++#else
+     FILETIME creationTime = {};
+     FILETIME exitTime     = {};
+     FILETIME kernelTime   = {};
+@@ -118,6 +143,7 @@ double GetCurrentProcessCpuTime()
+     double userTimeSeconds = static_cast<double>(userInt64.QuadPart) * 1e-7;
+ 
+     return systemTimeSeconds + userTimeSeconds;
++#endif
+ }
+ 
+ bool IsDirectory(const char *filename)
+@@ -211,6 +237,9 @@ void MakeForwardSlashThePathSeparator(std::string &path)
+ 
+ Optional<std::string> GetTempDirectory()
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return Optional<std::string>::Invalid();
++#else
+     char tempDirOut[MAX_PATH + 1];
+     GetTempPathA(MAX_PATH + 1, tempDirOut);
+     std::string tempDir = std::string(tempDirOut);
+@@ -226,15 +255,20 @@ Optional<std::string> GetTempDirectory()
+     }
+ 
+     return tempDir;
++#endif
+ }
+ 
+ Optional<std::string> CreateTemporaryFileInDirectory(const std::string &directory)
+ {
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return Optional<std::string>::Invalid();
++#else
+     char fileName[MAX_PATH + 1];
+     if (GetTempFileNameA(directory.c_str(), "ANGLE", 0, fileName) == 0)
+         return Optional<std::string>::Invalid();
+ 
+     return std::string(fileName);
++#endif
+ }
+ 
+ std::string GetLibraryPath(void *libraryHandle)
+@@ -244,6 +278,9 @@ std::string GetLibraryPath(void *libraryHandle)
+         return "";
+     }
+ 
++#if defined(ANGLE_WINDOWS_PHONE_8_1)
++    return "";
++#else
+     std::array<wchar_t, MAX_PATH> buffer;
+     if (GetModuleFileNameW(reinterpret_cast<HMODULE>(libraryHandle), buffer.data(),
+                            buffer.size()) == 0)
+@@ -252,6 +289,7 @@ std::string GetLibraryPath(void *libraryHandle)
+     }
+ 
+     return Narrow(buffer.data());
++#endif
+ }
+ 
+ void *GetLibrarySymbol(void *libraryHandle, const char *symbolName)
+diff --git a/third_party/angle/src/common/tls.cpp b/third_party/angle/src/common/tls.cpp
+index 9600bae..e7c7f73 100644
+--- a/third_party/angle/src/common/tls.cpp
++++ b/third_party/angle/src/common/tls.cpp
+@@ -28,9 +28,15 @@ using namespace ABI::Windows::System::Threading;
+ typedef vector<void *> ThreadLocalData;
+ 
+ static __declspec(thread) ThreadLocalData *currentThreadData = nullptr;
++// These emulation tables live for the whole process, like the TLS slots they
++// model; Chromium builds ANGLE with -Wglobal-constructors.
++#    pragma clang diagnostic push
++#    pragma clang diagnostic ignored "-Wglobal-constructors"
++#    pragma clang diagnostic ignored "-Wexit-time-destructors"
+ static set<ThreadLocalData *> allThreadData;
+ static DWORD nextTlsIndex = 0;
+ static vector<DWORD> freeTlsIndices;
++#    pragma clang diagnostic pop
+ 
+ #endif
+ 
+diff --git a/third_party/angle/src/common/utilities.cpp b/third_party/angle/src/common/utilities.cpp
+index 465928c..55c4efe 100644
+--- a/third_party/angle/src/common/utilities.cpp
++++ b/third_party/angle/src/common/utilities.cpp
+@@ -18,7 +18,13 @@
+ #if defined(ANGLE_ENABLE_WINDOWS_UWP)
+ #    include <windows.applicationmodel.core.h>
+ #    include <windows.graphics.display.h>
+-#    include <wrl.h>
++// The Phone 8.1 <wrl.h> pulls in WRL's out-of-process COM server module, which
++// calls desktop-only Co*ServerProcess functions. Only ComPtr is needed here.
++#    if defined(WINAPI_FAMILY_PHONE_APP) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#        include <wrl/client.h>
++#    else
++#        include <wrl.h>
++#    endif
+ #    include <wrl/wrappers/corewrappers.h>
+ #endif
+ 
 diff --git a/third_party/boringssl/BUILD.gn b/third_party/boringssl/BUILD.gn
 index f4e51bf..932b3aa 100644
 --- a/third_party/boringssl/BUILD.gn
@@ -11748,6 +12105,194 @@ index 7dfd888..d6fb30a 100644
  
    /*
     * based on ordering, find our next option, if we're at the beginning of
+diff --git a/third_party/dav1d/BUILD.gn b/third_party/dav1d/BUILD.gn
+index d75d823..9cb8720 100644
+--- a/third_party/dav1d/BUILD.gn
++++ b/third_party/dav1d/BUILD.gn
+@@ -8,6 +8,11 @@ import("//build/config/compiler/compiler.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//third_party/nasm/nasm_assemble.gni")
+ 
++# Windows ARM32 (the Windows Phone 8.1 port) has no assembler for dav1d's GNU
++# ARM sources in this cross-build. config/win/arm sets HAVE_ASM to 0, so only
++# the portable C decoder is built.
++dav1d_win_arm_c_only = is_win && current_cpu == "arm"
++
+ # MemorySanitizer can't handle assembly, https://crbug.com/928357.
+ enable_nasm = (current_cpu == "x86" || current_cpu == "x64") && !is_msan
+ 
+@@ -312,8 +317,8 @@ static_library("dav1d") {
+     if (enable_nasm) {
+       deps += [ ":dav1d_asm" ]
+     }
+-  } else if (current_cpu == "arm" || current_cpu == "arm64" ||
+-             current_cpu == "arm64e") {
++  } else if ((current_cpu == "arm" && !dav1d_win_arm_c_only) ||
++             current_cpu == "arm64" || current_cpu == "arm64e") {
+     deps += [ ":dav1d_arm" ]
+   } else if (current_cpu == "riscv64") {
+     deps += [ ":dav1d_riscv" ]
+diff --git a/third_party/dav1d/config/win/arm/config.h b/third_party/dav1d/config/win/arm/config.h
+new file mode 100644
+index 0000000..0292120
+--- /dev/null
++++ b/third_party/dav1d/config/win/arm/config.h
+@@ -0,0 +1,112 @@
++/*
++ * Autogenerated by the Meson build system.
++ * Do not edit, your changes will be lost.
++ */
++
++#pragma once
++
++#define ARCH_AARCH64 0
++
++#define ARCH_ARM 1
++
++#define ARCH_LOONGARCH 0
++
++#define ARCH_LOONGARCH32 0
++
++#define ARCH_LOONGARCH64 0
++
++#define ARCH_PPC64LE 0
++
++#define ARCH_RISCV 0
++
++#define ARCH_RV32 0
++
++#define ARCH_RV64 0
++
++#define ARCH_X86 0
++
++#define ARCH_X86_32 0
++
++#define ARCH_X86_64 0
++
++#define CONFIG_16BPC 1
++
++#define CONFIG_8BPC 1
++
++#define CONFIG_ASM_DEBUG 0
++
++// #define CONFIG_LOG 1 -- Logging is controlled by Chromium
++
++#define ENDIANNESS_BIG 0
++
++#define HAVE_ALIGNED_ALLOC 0
++
++#define HAVE_ASM 0
++
++#define HAVE_AS_ARCHEXT_DOTPROD_DIRECTIVE 0
++
++#define HAVE_AS_ARCHEXT_I8MM_DIRECTIVE 0
++
++#define HAVE_AS_ARCHEXT_SVE2_DIRECTIVE 0
++
++#define HAVE_AS_ARCHEXT_SVE_DIRECTIVE 0
++
++#define HAVE_AS_ARCH_DIRECTIVE 0
++
++#define HAVE_AS_FUNC 0
++
++#define HAVE_C11_GENERIC 1
++
++#define HAVE_CLOCK_GETTIME 0
++
++#define HAVE_DLSYM 0
++
++#define HAVE_DOTPROD 0
++
++#define HAVE_ELF_AUX_INFO 0
++
++#define HAVE_GETAUXVAL 0
++
++#define HAVE_I8MM 0
++
++#define HAVE_IO_H 1
++
++#define HAVE_MEMALIGN 0
++
++#define HAVE_POSIX_MEMALIGN 0
++
++// #define HAVE_PTHREAD_GETAFFINITY_NP 0 -- Controlled by Chomium
++
++#define HAVE_PTHREAD_NP_H 0
++
++// #define HAVE_PTHREAD_SETAFFINITY_NP 0 -- Controlled by Chomium
++
++#define HAVE_PTHREAD_SETNAME_NP 0
++
++#define HAVE_PTHREAD_SET_NAME_NP 0
++
++#define HAVE_SIGACTION 0
++
++#define HAVE_SVE 0
++
++#define HAVE_SVE2 0
++
++#define HAVE_SYS_TYPES_H 1
++
++#define HAVE_UNISTD_H 0
++
++#define TRIM_DSP_FUNCTIONS 1
++
++#define UNICODE 1
++
++#define _CRT_DECLARE_NONSTDC_NAMES 1
++
++#define _UNICODE 1
++
++// #define _WIN32_WINNT 0x0601 -- Windows version is controlled by Chromium
++
++#define __USE_MINGW_ANSI_STDIO 1
++
++#define fseeko _fseeki64
++
++#define ftello _ftelli64
+diff --git a/third_party/dav1d/libdav1d/src/win32/thread.c b/third_party/dav1d/libdav1d/src/win32/thread.c
+index b89bd6b..c73b931 100644
+--- a/third_party/dav1d/libdav1d/src/win32/thread.c
++++ b/third_party/dav1d/libdav1d/src/win32/thread.c
+@@ -54,7 +54,15 @@ COLD void dav1d_set_thread_name(const wchar_t *const name) {
+         set_thread_description(GetCurrentThread(), name);
+ }
+ 
++#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++/* Windows Phone 8.1: the Store CRT has no _beginthreadex and the SDK only
++ * exposes WaitForSingleObjectEx, so use the kernel thread API directly. */
++#define DAV1D_WINDOWS_PHONE_8_1 1
++static COLD DWORD WINAPI thread_entrypoint(void *const data) {
++#else
+ static COLD unsigned __stdcall thread_entrypoint(void *const data) {
++#endif
+     pthread_t *const t = data;
+     t->arg = t->func(t->arg);
+     return 0;
+@@ -67,13 +75,22 @@ COLD int dav1d_pthread_create(pthread_t *const thread,
+     const unsigned stack_size = attr ? attr->stack_size : 0;
+     thread->func = func;
+     thread->arg = arg;
++#if defined(DAV1D_WINDOWS_PHONE_8_1)
++    thread->h = CreateThread(NULL, stack_size, thread_entrypoint, thread,
++                             STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
++#else
+     thread->h = (HANDLE)_beginthreadex(NULL, stack_size, thread_entrypoint, thread,
+                                        STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
++#endif
+     return !thread->h;
+ }
+ 
+ COLD int dav1d_pthread_join(pthread_t *const thread, void **const res) {
++#if defined(DAV1D_WINDOWS_PHONE_8_1)
++    if (WaitForSingleObjectEx(thread->h, INFINITE, FALSE))
++#else
+     if (WaitForSingleObject(thread->h, INFINITE))
++#endif
+         return 1;
+ 
+     if (res)
 diff --git a/third_party/dawn/src/dawn/common/DynamicLib.cpp b/third_party/dawn/src/dawn/common/DynamicLib.cpp
 index d155e49..6608763 100644
 --- a/third_party/dawn/src/dawn/common/DynamicLib.cpp
@@ -16450,6 +16995,110 @@ index b0dfda5..92f71f2 100644
      mmap.reset();
      return false;
    }
+diff --git a/ui/display/BUILD.gn b/ui/display/BUILD.gn
+index 6f419c1..b4d68aa 100644
+--- a/ui/display/BUILD.gn
++++ b/ui/display/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//remoting/remoting_enable.gni")
+ import("//testing/test.gni")
+ 
+@@ -112,6 +113,33 @@ component("display") {
+       "win/uwp_text_scale_factor.cc",
+       "win/uwp_text_scale_factor.h",
+     ]
++    if (current_os == "winuwp" && phone81_port) {
++      # Phone 8.1 has no HMONITOR, GDI DPI, display configuration, ICC or
++      # WMI APIs. The CoreWindow shell installs a ScreenBase, so keep only the
++      # DPI and text-scale helpers and a Phone EDID stub.
++      sources -= [
++        "win/audio_edid_scan.cc",
++        "win/base_window_finder_win.cc",
++        "win/base_window_finder_win.h",
++        "win/color_profile_reader.cc",
++        "win/color_profile_reader.h",
++        "win/display_config_helper.cc",
++        "win/display_config_helper.h",
++        "win/display_info.cc",
++        "win/display_info.h",
++        "win/local_process_window_finder_win.cc",
++        "win/local_process_window_finder_win.h",
++        "win/scaling_util.cc",
++        "win/scaling_util.h",
++        "win/screen_win.cc",
++        "win/screen_win.h",
++        "win/screen_win_display.cc",
++        "win/screen_win_display.h",
++        "win/screen_win_headless.cc",
++        "win/screen_win_headless.h",
++      ]
++      sources += [ "win/audio_edid_scan_phone.cc" ]
++    }
+   }
+ 
+   if (is_ios) {
+diff --git a/ui/display/win/audio_edid_scan_phone.cc b/ui/display/win/audio_edid_scan_phone.cc
+new file mode 100644
+index 0000000..1370dc9
+--- /dev/null
++++ b/ui/display/win/audio_edid_scan_phone.cc
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "ui/display/win/audio_edid_scan.h"
++
++namespace display {
++namespace win {
++
++// Windows Phone 8.1 apps cannot query monitor EDID blocks through WMI, and the
++// handset's internal panel has no HDMI audio sink. Report no bitstream
++// formats, which callers already treat as "unknown / not supported".
++uint32_t ScanEdidBitstreams() {
++  return 0;
++}
++
++}  // namespace win
++}  // namespace display
+diff --git a/ui/display/win/dpi.cc b/ui/display/win/dpi.cc
+index cc5dd4e..b370525 100644
+--- a/ui/display/win/dpi.cc
++++ b/ui/display/win/dpi.cc
+@@ -6,7 +6,10 @@
+ 
+ #include <windows.h>
+ 
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "base/win/scoped_hdc.h"
++#endif
+ #include "ui/display/display.h"
+ #include "ui/display/win/uwp_text_scale_factor.h"
+ 
+@@ -43,6 +46,10 @@ double GetAccessibilityFontScale() {
+ namespace internal {
+ 
+ int GetDefaultSystemDPI() {
++#if BASE_WIN_IS_PHONE_8_1
++  // The Phone shell sizes its display in CoreWindow view pixels at scale 1.
++  return kDefaultDPI;
++#else
+   static int dpi_x = 0;
+   static int dpi_y = 0;
+   static bool should_initialize = true;
+@@ -58,6 +65,7 @@ int GetDefaultSystemDPI() {
+     CHECK_EQ(dpi_x, dpi_y, base::NotFatalUntil::M163);
+   }
+   return dpi_x;
++#endif  // BASE_WIN_IS_PHONE_8_1
+ }
+ 
+ float GetUnforcedDeviceScaleFactor() {
 diff --git a/ui/gfx/BUILD.gn b/ui/gfx/BUILD.gn
 index 6275eea..763becd 100644
 --- a/ui/gfx/BUILD.gn
@@ -16641,6 +17290,19 @@ index 80e3739..34b1421 100644
  float GetFontRenderParamsDeviceScaleFactor() {
    return device_scale_factor_;
  }
+diff --git a/ui/gfx/gpu_memory_buffer_handle.cc b/ui/gfx/gpu_memory_buffer_handle.cc
+index 42aac69..fd865c0 100644
+--- a/ui/gfx/gpu_memory_buffer_handle.cc
++++ b/ui/gfx/gpu_memory_buffer_handle.cc
+@@ -32,7 +32,7 @@ base::win::ScopedHandle CloneDXGIHandle(HANDLE handle) {
+ DXGIHandle DXGIHandle::CreateFakeForTest() {
+   // DXGIHandle requires a valid HANDLE, so just create a placeholder event.
+   base::win::ScopedHandle fake_handle(
+-      ::CreateEvent(nullptr, FALSE, FALSE, nullptr));
++      ::CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS));
+   return DXGIHandle(std::move(fake_handle));
+ }
+ 
 diff --git a/ui/gfx/scrollbar_size.cc b/ui/gfx/scrollbar_size.cc
 index 3ef5f4d..5fe2a00 100644
 --- a/ui/gfx/scrollbar_size.cc

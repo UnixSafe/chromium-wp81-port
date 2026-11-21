@@ -17868,6 +17868,27 @@ index 6497acc..5da2644 100644
  
  #include <string>
  
+diff --git a/ui/gl/BUILD.gn b/ui/gl/BUILD.gn
+index a89e6c2..4cb1924 100644
+--- a/ui/gl/BUILD.gn
++++ b/ui/gl/BUILD.gn
+@@ -344,10 +344,12 @@ component("gl") {
+       "//ui/gfx/mojom:dxgi_info",
+     ]
+ 
+-    data_deps += [
+-      "//third_party/swiftshader/src/Vulkan:icd_file",
+-      "//third_party/swiftshader/src/Vulkan:swiftshader_libvulkan",
+-    ]
++    if (enable_swiftshader) {
++      data_deps += [
++        "//third_party/swiftshader/src/Vulkan:icd_file",
++        "//third_party/swiftshader/src/Vulkan:swiftshader_libvulkan",
++      ]
++    }
+     if (!use_static_angle) {
+       data_deps += [
+         "//third_party/angle:libEGL",
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..c677108 100644
 --- a/v8/BUILD.gn

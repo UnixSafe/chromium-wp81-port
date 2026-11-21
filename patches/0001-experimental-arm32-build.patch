@@ -5756,7 +5756,7 @@ index d339de7..68f2e66 100644
      rust_abi_target = "x86_64-pc-windows-msvc"
    } else if (current_cpu == "x86") {
 diff --git a/build/config/win/BUILD.gn b/build/config/win/BUILD.gn
-index 1edf103..b82cb61 100644
+index 1edf103..ee9a11e 100644
 --- a/build/config/win/BUILD.gn
 +++ b/build/config/win/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/compiler/compiler.gni")
@@ -5797,7 +5797,7 @@ index 1edf103..b82cb61 100644
      } else if (target_winuwp_version == "8.0") {
        defines += [ "WIN8=_WIN32_WINNT_WIN8" ]
      }
-@@ -303,16 +309,58 @@ config("runtime_library") {
+@@ -303,16 +309,59 @@ config("runtime_library") {
  # Some third-party libraries assume that these defines set what version of
  # Windows is available at runtime. Targets using these libraries need to
  # manually override this config for their compiles.
@@ -5833,6 +5833,7 @@ index 1edf103..b82cb61 100644
 +      cflags += [
 +        "-imsvc" + phone81_desktop_sdk_include + "/um",
 +        "-imsvc" + phone81_desktop_sdk_include + "/shared",
++        "-imsvc" + phone81_desktop_sdk_include + "/winrt",
 +      ]
 +    }
 +  }
@@ -5865,7 +5866,7 @@ index 1edf103..b82cb61 100644
  }
  
  # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
-@@ -350,16 +398,19 @@ config("default_cfg_compiler") {
+@@ -350,16 +399,19 @@ config("default_cfg_compiler") {
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
    # The CFG guards are only emitted if |win_enable_cfg_guards| is enabled.
@@ -5894,7 +5895,7 @@ index 1edf103..b82cb61 100644
    }
  }
  
-@@ -369,10 +420,12 @@ config("disable_guards_cfg_compiler") {
+@@ -369,10 +421,12 @@ config("disable_guards_cfg_compiler") {
    # Emit table of address-taken functions for Control-Flow Guard (CFG).
    # This is needed to allow functions to be called by code that is built
    # with CFG enabled, such as system libraries.
@@ -5910,7 +5911,7 @@ index 1edf103..b82cb61 100644
  }
  
  config("cfi_linker") {
-@@ -383,7 +436,8 @@ config("cfi_linker") {
+@@ -383,7 +437,8 @@ config("cfi_linker") {
    # ASan and CFG leads to slow process startup. Chromium's test runner uses
    # lots of child processes, so this means things are really slow. Disable CFG
    # for now. https://crbug.com/846966
@@ -21566,6 +21567,94 @@ index f353476..7de9bb8 100644
      data_deps += [ "//third_party/perfetto/src/trace_processor:trace_processor_shell($default_toolchain)" ]
    }
  
+diff --git a/ui/base/BUILD.gn b/ui/base/BUILD.gn
+index d49ede6..c6b595a 100644
+--- a/ui/base/BUILD.gn
++++ b/ui/base/BUILD.gn
+@@ -125,6 +125,7 @@ source_set("webui_resource_path") {
+ }
+ 
+ component("base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base"
+ 
+   sources = [
+@@ -666,6 +667,7 @@ if (is_ios) {
+ }
+ 
+ component("data_exchange") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   defines = [ "IS_UI_BASE_DATA_EXCHANGE_IMPL" ]
+ 
+   sources = [
+diff --git a/ui/base/clipboard/BUILD.gn b/ui/base/clipboard/BUILD.gn
+index 793c31c..38f9496 100644
+--- a/ui/base/clipboard/BUILD.gn
++++ b/ui/base/clipboard/BUILD.gn
+@@ -12,6 +12,7 @@ if (is_ios) {
+ }
+ 
+ component("clipboard_types") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_clipboard_types"
+   sources = [
+     "clipboard_buffer.h",
+@@ -107,6 +108,7 @@ source_set("url_file_parser") {
+ }
+ 
+ component("clipboard") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_clipboard"
+ 
+   sources = [
+diff --git a/ui/base/dragdrop/BUILD.gn b/ui/base/dragdrop/BUILD.gn
+index 7a7872f..8f52e7d 100644
+--- a/ui/base/dragdrop/BUILD.gn
++++ b/ui/base/dragdrop/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ component("types") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_dragdrop_types"
+   sources = [
+     "drag_drop_types.cc",
+diff --git a/ui/base/idle/BUILD.gn b/ui/base/idle/BUILD.gn
+index 87294b0..9e2a3b3 100644
+--- a/ui/base/idle/BUILD.gn
++++ b/ui/base/idle/BUILD.gn
+@@ -10,6 +10,7 @@ if (is_mac) {
+ }
+ 
+ component("idle") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_idle"
+ 
+   defines = [ "IS_UI_BASE_IDLE_IMPL" ]
+diff --git a/ui/base/ime/init/BUILD.gn b/ui/base/ime/init/BUILD.gn
+index 7831192..0a9ba2e 100644
+--- a/ui/base/ime/init/BUILD.gn
++++ b/ui/base/ime/init/BUILD.gn
+@@ -5,6 +5,7 @@
+ import("//build/config/ui.gni")
+ 
+ component("init") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_ime_init"
+ 
+   sources = [
+diff --git a/ui/base/ime/win/BUILD.gn b/ui/base/ime/win/BUILD.gn
+index 8972a21..240de5a 100644
+--- a/ui/base/ime/win/BUILD.gn
++++ b/ui/base/ime/win/BUILD.gn
+@@ -5,6 +5,7 @@
+ assert(is_win)
+ 
+ component("win") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "ui_base_ime_win"
+   sources = [
+     "input_method_win_base.cc",
 diff --git a/ui/base/resource/data_pack.cc b/ui/base/resource/data_pack.cc
 index b0dfda5..92f71f2 100644
 --- a/ui/base/resource/data_pack.cc
@@ -21652,6 +21741,78 @@ index b0dfda5..92f71f2 100644
      mmap.reset();
      return false;
    }
+diff --git a/ui/color/BUILD.gn b/ui/color/BUILD.gn
+index 4535fc5..b272804 100644
+--- a/ui/color/BUILD.gn
++++ b/ui/color/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/buildflag_header.gni")
++import("//build/config/win/phone81.gni")
+ import("//mojo/public/tools/bindings/mojom.gni")
+ import("//testing/test.gni")
+ import("//ui/base/ui_features.gni")
+@@ -223,7 +224,8 @@ component("mixers") {
+       "mac/native_color_mixers_mac.mm",
+     ]
+     frameworks = [ "AppKit.framework" ]
+-  } else if (is_win) {
++  } else if (is_win && !(current_os == "winuwp" && phone81_port)) {
++    # Windows Phone 8.1 uses the portable mixers in native_color_mixers.cc.
+     sources += [
+       "win/css_system_color_mixer_win.cc",
+       "win/native_color_mixers_win.cc",
+diff --git a/ui/color/css_system_color_mixer.cc b/ui/color/css_system_color_mixer.cc
+index 2e51a25..26bd419 100644
+--- a/ui/color/css_system_color_mixer.cc
++++ b/ui/color/css_system_color_mixer.cc
+@@ -14,7 +14,14 @@
+ 
+ namespace ui {
+ 
+-#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"  // Phone 8.1 has no user32 colors.
++#define UI_COLOR_CSS_WIN32 !BASE_WIN_IS_PHONE_8_1
++#else
++#define UI_COLOR_CSS_WIN32 0
++#endif
++
++#if !UI_COLOR_CSS_WIN32 && !BUILDFLAG(IS_MAC)
+ void MapNativeColorsToCssSystemColors(ColorMixer& mixer, ColorProviderKey key) {
+ }
+ #endif
+diff --git a/ui/color/native_color_mixers.cc b/ui/color/native_color_mixers.cc
+index ee30b95..e0cd932 100644
+--- a/ui/color/native_color_mixers.cc
++++ b/ui/color/native_color_mixers.cc
+@@ -7,14 +7,23 @@
+ #include "build/build_config.h"
+ #include "ui/color/color_provider_key.h"
+ 
++#if BUILDFLAG(IS_WIN)
++// Windows Phone 8.1 has no user32 system colors or DWM accent; it uses these
++// portable (empty) native mixers.
++#include "base/win/windows_phone_8_1.h"
++#define UI_COLOR_NATIVE_WIN32 !BASE_WIN_IS_PHONE_8_1
++#else
++#define UI_COLOR_NATIVE_WIN32 0
++#endif
++
+ namespace ui {
+ 
+-#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
++#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC) && !UI_COLOR_NATIVE_WIN32
+ void AddNativeCoreColorMixer(ColorProvider* provider,
+                              const ColorProviderKey& key) {}
+ #endif
+ 
+-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
++#if !BUILDFLAG(IS_MAC) && !UI_COLOR_NATIVE_WIN32
+ void AddNativeUiColorMixer(ColorProvider* provider,
+                            const ColorProviderKey& key) {}
+ #endif
 diff --git a/ui/display/BUILD.gn b/ui/display/BUILD.gn
 index 6f419c1..b4d68aa 100644
 --- a/ui/display/BUILD.gn
@@ -21756,6 +21917,42 @@ index cc5dd4e..b370525 100644
  }
  
  float GetUnforcedDeviceScaleFactor() {
+diff --git a/ui/events/BUILD.gn b/ui/events/BUILD.gn
+index cc26741..09d7a63 100644
+--- a/ui/events/BUILD.gn
++++ b/ui/events/BUILD.gn
+@@ -40,6 +40,7 @@ static_library("dom_keycode_converter") {
+ }
+ 
+ static_library("dom_keyboard_layout") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   public = [
+     "keycodes/dom/dom_keyboard_layout.h",
+     "keycodes/dom/dom_keyboard_layout_manager.h",
+@@ -128,6 +129,7 @@ if (is_android) {
+ }
+ 
+ component("events_base") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "base_event_utils.cc",
+     "base_event_utils.h",
+@@ -245,6 +247,7 @@ if (is_android) {
+ }
+ 
+ component("events") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   public = [
+     "cocoa/cocoa_event_utils.h",
+     "event.h",
+@@ -458,6 +461,7 @@ component("events") {
+ }
+ 
+ component("keyboard_hook") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   public = [ "keyboard_hook.h" ]
+ 
+   defines = [ "IS_KEYBOARD_HOOK_IMPL" ]
 diff --git a/ui/gfx/BUILD.gn b/ui/gfx/BUILD.gn
 index 6275eea..763becd 100644
 --- a/ui/gfx/BUILD.gn
@@ -22631,6 +22828,142 @@ index 8ecd6bd..e9bb665 100644
    output_name = "gl_init"
  
    public = [
+diff --git a/ui/native_theme/BUILD.gn b/ui/native_theme/BUILD.gn
+index 25db8fc..6e1a48d 100644
+--- a/ui/native_theme/BUILD.gn
++++ b/ui/native_theme/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//testing/test.gni")
+ 
+ if (is_android) {
+@@ -11,6 +12,7 @@ if (is_android) {
+ }
+ 
+ component("native_theme") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   sources = [
+     "caption_style.cc",
+     "caption_style.h",
+@@ -94,7 +96,7 @@ component("native_theme") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !(current_os == "winuwp" && phone81_port)) {
+     sources += [
+       "caption_style_win.cc",
+       "caption_style_win.h",
+diff --git a/ui/native_theme/caption_style.cc b/ui/native_theme/caption_style.cc
+index eb3a065..7593491 100644
+--- a/ui/native_theme/caption_style.cc
++++ b/ui/native_theme/caption_style.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/native_theme/caption_style.h"
+ 
++#include "ui/native_theme/os_settings_provider.h"  // UI_NATIVE_THEME_WIN32
++
+ #include "base/json/json_reader.h"
+ #include "base/values.h"
+ #include "build/build_config.h"
+@@ -38,7 +40,7 @@ std::optional<CaptionStyle> CaptionStyle::FromSpec(const std::string& spec) {
+   return style;
+ }
+ 
+-#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_MAC)
++#if !UI_NATIVE_THEME_WIN32 && !BUILDFLAG(IS_MAC)
+ std::optional<CaptionStyle> CaptionStyle::FromSystemSettings() {
+   return std::nullopt;
+ }
+diff --git a/ui/native_theme/native_theme.cc b/ui/native_theme/native_theme.cc
+index 02e2c03..6d4bef0 100644
+--- a/ui/native_theme/native_theme.cc
++++ b/ui/native_theme/native_theme.cc
+@@ -53,7 +53,7 @@
+ #elif defined(USE_AURA)
+ #include "ui/native_theme/native_theme_aura.h"
+ #include "ui/native_theme/native_theme_fluent.h"
+-#if BUILDFLAG(IS_WIN)
++#if UI_NATIVE_THEME_WIN32
+ #include "ui/native_theme/native_theme_win.h"
+ #endif
+ #else
+@@ -83,7 +83,7 @@ base::RepeatingClosureList& PreferredColorSchemeOverrideCallbacks() {
+ using NativeUiTheme = NativeThemeMac;
+ using WebUiTheme = NativeThemeAura;
+ #elif defined(USE_AURA)
+-#if BUILDFLAG(IS_WIN)
++#if UI_NATIVE_THEME_WIN32
+ using NativeUiTheme = NativeThemeWin;
+ #else
+ using NativeUiTheme = NativeThemeAura;
+diff --git a/ui/native_theme/os_settings_provider.cc b/ui/native_theme/os_settings_provider.cc
+index af8cd5a..5c6d38e 100644
+--- a/ui/native_theme/os_settings_provider.cc
++++ b/ui/native_theme/os_settings_provider.cc
+@@ -31,7 +31,7 @@
+ #include "ui/native_theme/os_settings_provider_ash.h"
+ #elif BUILDFLAG(IS_MAC)
+ #include "ui/native_theme/os_settings_provider_mac.h"
+-#elif BUILDFLAG(IS_WIN)
++#elif UI_NATIVE_THEME_WIN32
+ #include "base/win/win_util.h"
+ #include "ui/native_theme/os_settings_provider_win.h"
+ #endif
+@@ -111,7 +111,7 @@ OsSettingsProvider& OsSettingsProvider::Get() {
+   // If there is no production provider, create one.
+   const auto& providers = GetOsSettingsProviders(PriorityLevel::kProduction);
+   if (providers.empty()) {
+-#if BUILDFLAG(IS_WIN)
++#if UI_NATIVE_THEME_WIN32
+     // `OsSettingsProviderWin` attempts calls to user32.dll, so avoid
+     // instantiating it if those calls are not possible.
+     if (!base::win::IsUser32AndGdi32Available()) {
+diff --git a/ui/native_theme/os_settings_provider.h b/ui/native_theme/os_settings_provider.h
+index 2bb1d35..dea06ca 100644
+--- a/ui/native_theme/os_settings_provider.h
++++ b/ui/native_theme/os_settings_provider.h
+@@ -16,6 +16,15 @@
+ #include "ui/color/color_provider_key.h"
+ #include "ui/native_theme/native_theme.h"
+ 
++#if BUILDFLAG(IS_WIN)
++// Windows Phone 8.1 has no user32 theme or system settings; it uses the
++// portable providers and NativeThemeAura.
++#include "base/win/windows_phone_8_1.h"
++#define UI_NATIVE_THEME_WIN32 !BASE_WIN_IS_PHONE_8_1
++#else
++#define UI_NATIVE_THEME_WIN32 0
++#endif
++
+ namespace ui {
+ 
+ #if BUILDFLAG(IS_ANDROID)
+@@ -27,7 +36,7 @@ using OsSettingsProviderImpl = OsSettingsProviderAsh;
+ #elif BUILDFLAG(IS_MAC)
+ class OsSettingsProviderMac;
+ using OsSettingsProviderImpl = OsSettingsProviderMac;
+-#elif BUILDFLAG(IS_WIN)
++#elif UI_NATIVE_THEME_WIN32
+ class OsSettingsProviderWin;
+ using OsSettingsProviderImpl = OsSettingsProviderWin;
+ #else
+diff --git a/ui/platform_window/win/BUILD.gn b/ui/platform_window/win/BUILD.gn
+index f5f6cb1..28c016c 100644
+--- a/ui/platform_window/win/BUILD.gn
++++ b/ui/platform_window/win/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ component("win") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   output_name = "win_window"
+ 
+   deps = [
 diff --git a/v8/BUILD.gn b/v8/BUILD.gn
 index 091e894..b1c728a 100644
 --- a/v8/BUILD.gn

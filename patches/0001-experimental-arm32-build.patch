@@ -12429,6 +12429,100 @@ index 39de096..ebaa8f9 100644
      type = X509_FILETYPE_PEM;
    }
    if (X509_load_cert_crl_file(ctx, file, type) != 0) {
+diff --git a/third_party/cpuinfo/src/deps/clog/src/clog.c b/third_party/cpuinfo/src/deps/clog/src/clog.c
+index 27658f9..061e615 100644
+--- a/third_party/cpuinfo/src/deps/clog/src/clog.c
++++ b/third_party/cpuinfo/src/deps/clog/src/clog.c
+@@ -105,7 +105,10 @@ void clog_vlog_fatal(const char* module, const char* format, va_list args) {
+ 			out_buffer = heap_buffer;
+ 		}
+ 		out_buffer[prefix_chars + format_chars] = '\n';
+-		#if defined(_WIN32)
++		#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++			/* No standard handles for Windows Phone 8.1 apps. */
++		#elif defined(_WIN32)
+ 			DWORD bytes_written;
+ 			WriteFile(
+ 				GetStdHandle(STD_ERROR_HANDLE),
+@@ -183,7 +186,10 @@ void clog_vlog_error(const char* module, const char* format, va_list args) {
+ 			out_buffer = heap_buffer;
+ 		}
+ 		out_buffer[prefix_chars + format_chars] = '\n';
+-		#if defined(_WIN32)
++		#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++			/* No standard handles for Windows Phone 8.1 apps. */
++		#elif defined(_WIN32)
+ 			DWORD bytes_written;
+ 			WriteFile(
+ 				GetStdHandle(STD_ERROR_HANDLE),
+@@ -261,7 +267,10 @@ void clog_vlog_warning(const char* module, const char* format, va_list args) {
+ 			out_buffer = heap_buffer;
+ 		}
+ 		out_buffer[prefix_chars + format_chars] = '\n';
+-		#if defined(_WIN32)
++		#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++			/* No standard handles for Windows Phone 8.1 apps. */
++		#elif defined(_WIN32)
+ 			DWORD bytes_written;
+ 			WriteFile(
+ 				GetStdHandle(STD_ERROR_HANDLE),
+@@ -339,7 +348,10 @@ void clog_vlog_info(const char* module, const char* format, va_list args) {
+ 			out_buffer = heap_buffer;
+ 		}
+ 		out_buffer[prefix_chars + format_chars] = '\n';
+-		#if defined(_WIN32)
++		#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++			/* No standard handles for Windows Phone 8.1 apps. */
++		#elif defined(_WIN32)
+ 			DWORD bytes_written;
+ 			WriteFile(
+ 				GetStdHandle(STD_OUTPUT_HANDLE),
+@@ -417,7 +429,10 @@ void clog_vlog_debug(const char* module, const char* format, va_list args) {
+ 			out_buffer = heap_buffer;
+ 		}
+ 		out_buffer[prefix_chars + format_chars] = '\n';
+-		#if defined(_WIN32)
++		#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++			/* No standard handles for Windows Phone 8.1 apps. */
++		#elif defined(_WIN32)
+ 			DWORD bytes_written;
+ 			WriteFile(
+ 				GetStdHandle(STD_OUTPUT_HANDLE),
+diff --git a/third_party/cpuinfo/src/src/init.c b/third_party/cpuinfo/src/src/init.c
+index 81d5721..a253625 100644
+--- a/third_party/cpuinfo/src/src/init.c
++++ b/third_party/cpuinfo/src/src/init.c
+@@ -38,7 +38,7 @@ bool CPUINFO_ABI cpuinfo_initialize(void) {
+ 	pthread_once(&init_guard, &cpuinfo_arm_linux_init);
+ #elif defined(__MACH__) && defined(__APPLE__)
+ 	pthread_once(&init_guard, &cpuinfo_arm_mach_init);
+-#elif defined(_WIN32)
++#elif defined(_WIN32) && !CPUINFO_ARCH_ARM
+ 	InitOnceExecuteOnce(&init_guard, &cpuinfo_arm_windows_init, NULL, NULL);
+ #else
+ 	cpuinfo_log_error("operating system is not supported in cpuinfo");
+diff --git a/third_party/cpuinfo/src/src/log.c b/third_party/cpuinfo/src/src/log.c
+index 2f85128..ac47d18 100644
+--- a/third_party/cpuinfo/src/src/log.c
++++ b/third_party/cpuinfo/src/src/log.c
+@@ -99,7 +99,11 @@ static void cpuinfo_vlog(
+ 			args_copy);
+ 		out_buffer = heap_buffer;
+ 	}
+-#ifdef _WIN32
++#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++	/* Windows Phone 8.1 apps have no standard handles; drop the message. */
++	(void)output_handle;
++#elif defined(_WIN32)
+ 	out_buffer[prefix_length + format_length] = '\r';
+ 	out_buffer[prefix_length + format_length + 1] = '\n';
+ 
 diff --git a/third_party/crashpad/crashpad/third_party/getopt/getopt.cc b/third_party/crashpad/crashpad/third_party/getopt/getopt.cc
 index 7dfd888..d6fb30a 100644
 --- a/third_party/crashpad/crashpad/third_party/getopt/getopt.cc
@@ -12744,6 +12838,22 @@ index 4dd58a4..2715837 100644
  #define DAWN_PLATFORM_IS_WINUWP 1
  #else
  #error "Unsupported Windows platform."
+diff --git a/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h b/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h
+index 60a107f..2d69e4a 100644
+--- a/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h
++++ b/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h
+@@ -18,6 +18,11 @@ namespace Eigen {
+ 
+ namespace internal {
+ 
++#if EIGEN_COMP_MSVC && defined(_M_ARM)
++// Windows ARM32 (clang-cl): declare the _BitScanReverse intrinsic.
++#include <intrin.h>
++#endif
++
+ // Note: result is undefined if val == 0
+ template <typename T>
+ EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE std::enable_if_t<sizeof(T) == 4, int> count_leading_zeros(const T val) {
 diff --git a/third_party/expat/src/expat/lib/xmlparse.c b/third_party/expat/src/expat/lib/xmlparse.c
 index 056c724..f9a7bce 100644
 --- a/third_party/expat/src/expat/lib/xmlparse.c
@@ -16088,6 +16198,39 @@ index 7d4e201..dd6bf49 100644
  
  
    /**************************************************************************
+diff --git a/third_party/fxdiv/src/include/fxdiv.h b/third_party/fxdiv/src/include/fxdiv.h
+index 2c35038..43f241e 100644
+--- a/third_party/fxdiv/src/include/fxdiv.h
++++ b/third_party/fxdiv/src/include/fxdiv.h
+@@ -38,7 +38,9 @@ static inline uint32_t fxdiv_mulhi_uint32_t(uint32_t a, uint32_t b) {
+ 	return (uint32_t) __umulhi((unsigned int) a, (unsigned int) b);
+ #elif defined(_MSC_VER) && defined(_M_IX86)
+ 	return (uint32_t) (__emulu((unsigned int) a, (unsigned int) b) >> 32);
+-#elif defined(_MSC_VER) && defined(_M_ARM)
++#elif defined(_MSC_VER) && defined(_M_ARM) && !defined(__clang__)
++	/* clang-cl does not provide _MulUnsignedHigh; the portable form below
++	 * compiles to UMULL. */
+ 	return (uint32_t) _MulUnsignedHigh((unsigned long) a, (unsigned long) b);
+ #else
+ 	return (uint32_t) (((uint64_t) a * (uint64_t) b) >> 32);
+diff --git a/third_party/gemmlowp/src/internal/platform.h b/third_party/gemmlowp/src/internal/platform.h
+index ab71414..d5e33c6 100644
+--- a/third_party/gemmlowp/src/internal/platform.h
++++ b/third_party/gemmlowp/src/internal/platform.h
+@@ -63,7 +63,13 @@ inline void aligned_free(void *memptr) { _aligned_free(memptr); }
+ inline int GetHardwareConcurrency(int max_threads) {
+   if (max_threads == 0) {
+     SYSTEM_INFO sysinfo;
++#if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++    // GetSystemInfo is desktop-only in the Windows Phone 8.1 SDK.
++    GetNativeSystemInfo(&sysinfo);
++#else
+     GetSystemInfo(&sysinfo);
++#endif
+     return sysinfo.dwNumberOfProcessors;
+   }
+   return max_threads;
 diff --git a/third_party/harfbuzz/src/src/hb-ot-layout-common.hh b/third_party/harfbuzz/src/src/hb-ot-layout-common.hh
 index 7b4754a..6ce6ca8 100644
 --- a/third_party/harfbuzz/src/src/hb-ot-layout-common.hh
@@ -19406,6 +19549,110 @@ index 3dae9a5..9b2a41e 100644
      options_.enable_codegen_trace = kEnableCodegenTrace;
    }
  }
+diff --git a/third_party/pthreadpool/src/src/threadpool-atomics.h b/third_party/pthreadpool/src/src/threadpool-atomics.h
+index 3eb24b1..97c8f5f 100644
+--- a/third_party/pthreadpool/src/src/threadpool-atomics.h
++++ b/third_party/pthreadpool/src/src/threadpool-atomics.h
+@@ -48,11 +48,65 @@
+ /* POSIX headers */
+ #if PTHREADPOOL_USE_PTHREADS
+ #include <pthread.h>
++#elif defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++#define PTHREADPOOL_USE_WIN32_PHONE 1
++/* Windows Phone 8.1: no C11 threads in the VC120 Store CRT, and only the
++ * *Ex wait functions are exposed to Phone apps. */
++#include <windows.h>
+ #else
+ #include <threads.h>
+ #endif
+ 
+-#if PTHREADPOOL_USE_PTHREADS
++#if PTHREADPOOL_USE_WIN32_PHONE
++typedef HANDLE pthreadpool_thread_t;
++typedef SRWLOCK pthreadpool_mutex_t;
++typedef CONDITION_VARIABLE pthreadpool_cond_t;
++typedef DWORD pthreadpool_thread_return_t;
++static inline void pthreadpool_mutex_init(pthreadpool_mutex_t* mutex) {
++  InitializeSRWLock(mutex);
++}
++static inline void pthreadpool_mutex_destroy(pthreadpool_mutex_t* mutex) {
++  (void)mutex; /* SRW locks need no destruction. */
++}
++static inline void pthreadpool_mutex_lock(pthreadpool_mutex_t* mutex) {
++  AcquireSRWLockExclusive(mutex);
++}
++static inline void pthreadpool_mutex_unlock(pthreadpool_mutex_t* mutex) {
++  ReleaseSRWLockExclusive(mutex);
++}
++static inline void pthreadpool_cond_init(pthreadpool_cond_t* cond) {
++  InitializeConditionVariable(cond);
++}
++static inline void pthreadpool_cond_destroy(pthreadpool_cond_t* cond) {
++  (void)cond; /* Condition variables need no destruction. */
++}
++static inline void pthreadpool_cond_wait(pthreadpool_cond_t* cond,
++                                         pthreadpool_mutex_t* mutex) {
++  SleepConditionVariableSRW(cond, mutex, INFINITE, 0);
++}
++static inline void pthreadpool_cond_signal(pthreadpool_cond_t* cond) {
++  WakeConditionVariable(cond);
++}
++static inline void pthreadpool_cond_broadcast(pthreadpool_cond_t* cond) {
++  WakeAllConditionVariable(cond);
++}
++static inline void pthreadpool_thread_create(
++    pthreadpool_thread_t* thread, pthreadpool_thread_return_t(fun)(void*),
++    void* arg) {
++  /* ARM has a single calling convention, so fun matches
++   * LPTHREAD_START_ROUTINE. */
++  *thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)fun, arg, 0, NULL);
++}
++static inline void pthreadpool_thread_join(
++    pthreadpool_thread_t thread, pthreadpool_thread_return_t* return_value) {
++  WaitForSingleObjectEx(thread, INFINITE, FALSE);
++  if (return_value != NULL) {
++    GetExitCodeThread(thread, return_value);
++  }
++  CloseHandle(thread);
++}
++#elif PTHREADPOOL_USE_PTHREADS
+ typedef pthread_t pthreadpool_thread_t;
+ typedef pthread_mutex_t pthreadpool_mutex_t;
+ typedef pthread_cond_t pthreadpool_cond_t;
+diff --git a/third_party/pthreadpool/src/src/threadpool-object.h b/third_party/pthreadpool/src/src/threadpool-object.h
+index da4066a..7da70ba 100644
+--- a/third_party/pthreadpool/src/src/threadpool-object.h
++++ b/third_party/pthreadpool/src/src/threadpool-object.h
+@@ -22,6 +22,10 @@
+ /* POSIX headers */
+ #if PTHREADPOOL_USE_PTHREADS
+ #include <pthread.h>
++#elif defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++    WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++/* Windows Phone 8.1: no C11 threads in the VC120 Store CRT. */
++#include <windows.h>
+ #else
+ #include <threads.h>
+ #endif
+diff --git a/third_party/ruy/src/ruy/ctx.cc b/third_party/ruy/src/ruy/ctx.cc
+index 5d6afd4..090e91d 100644
+--- a/third_party/ruy/src/ruy/ctx.cc
++++ b/third_party/ruy/src/ruy/ctx.cc
+@@ -80,7 +80,13 @@ CpuInfo* Ctx::mutable_cpuinfo() { return &mutable_impl()->cpuinfo_; }
+ namespace {
+ 
+ int GetHexIntEnvVarOrZero(const char* name) {
++#if defined(_WIN32) && defined(WINAPI_FAMILY) && \
++    defined(WINAPI_FAMILY_PHONE_APP) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
++  // Windows Phone 8.1 apps have no process environment.
++  const char* val = nullptr;
++#else
+   const char* val = getenv(name);
++#endif
+   if (!val) {
+     return 0;
+   }
 diff --git a/third_party/simdutf/simdutf.cpp b/third_party/simdutf/simdutf.cpp
 index ebada9a..1bcd0b4 100644
 --- a/third_party/simdutf/simdutf.cpp
@@ -20150,6 +20397,82 @@ index 8c6b258..c5bc3d9 100644
 +#endif
 +
  #endif /* SQLITE_OS_WIN */
+diff --git a/third_party/tflite/src/tensorflow/lite/profiling/memory_info.cc b/third_party/tflite/src/tensorflow/lite/profiling/memory_info.cc
+index 8182cdb..dc5326c 100644
+--- a/third_party/tflite/src/tensorflow/lite/profiling/memory_info.cc
++++ b/third_party/tflite/src/tensorflow/lite/profiling/memory_info.cc
+@@ -32,9 +32,15 @@ limitations under the License.
+ #include <malloc/malloc.h>
+ #elif defined(_WIN32)
+ #include <windows.h>
++#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++// Windows Phone 8.1: no psapi; memory usage is reported as unsupported.
++#define TFLITE_WINDOWS_PHONE_8_1 1
++#else
+ // psapi must be included after windows.h.
+ #include <psapi.h>
+ #endif
++#endif
+ 
+ namespace tflite {
+ namespace profiling {
+@@ -99,7 +105,8 @@ int64_t GetCurrentCpuRssKb() {
+ }  // namespace
+ 
+ bool MemoryUsage::IsSupported() {
+-#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
++#if defined(__linux__) || defined(__APPLE__) || \
++    (defined(_WIN32) && !defined(TFLITE_WINDOWS_PHONE_8_1))
+   return true;
+ #endif
+   return false;
+@@ -152,7 +159,7 @@ MemoryUsage GetMemoryUsage() {
+   struct mstats stats = mstats();
+   result.total_allocated_bytes = stats.bytes_total;
+   result.in_use_allocated_bytes = stats.bytes_used;
+-#elif defined(_WIN32)
++#elif defined(_WIN32) && !defined(TFLITE_WINDOWS_PHONE_8_1)
+   PROCESS_MEMORY_COUNTERS_EX process_memory_counters;
+   HANDLE process_handle = GetCurrentProcess();
+   if (process_handle != nullptr &&
+diff --git a/third_party/tflite/src/tensorflow/lite/shared_library.h b/third_party/tflite/src/tensorflow/lite/shared_library.h
+index 73886cc..c0681ed 100644
+--- a/third_party/tflite/src/tensorflow/lite/shared_library.h
++++ b/third_party/tflite/src/tensorflow/lite/shared_library.h
+@@ -30,7 +30,13 @@ class SharedLibrary {
+  public:
+ #if defined(_WIN32)
+   static inline void* LoadLibrary(const wchar_t* lib) {
++#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++    // Windows Phone 8.1 apps can only load DLLs from their own package.
++    return ::LoadPackagedLibrary(lib, 0);
++#else
+     return ::LoadLibraryW(lib);
++#endif
+   }
+   static inline void* GetLibrarySymbol(void* handle, const char* symbol) {
+     return reinterpret_cast<void*>(
+diff --git a/third_party/tflite/src/third_party/xla/xla/tsl/platform/windows/env_time.cc b/third_party/tflite/src/third_party/xla/xla/tsl/platform/windows/env_time.cc
+index abdf565..eda9867 100644
+--- a/third_party/tflite/src/third_party/xla/xla/tsl/platform/windows/env_time.cc
++++ b/third_party/tflite/src/third_party/xla/xla/tsl/platform/windows/env_time.cc
+@@ -34,7 +34,14 @@ typedef VOID(WINAPI* FnGetSystemTimePreciseAsFileTime)(LPFILETIME);
+ uint64_t EnvTime::NowNanos() {
+   static FnGetSystemTimePreciseAsFileTime precise_time_function =
+       []() -> FnGetSystemTimePreciseAsFileTime {
++#if (defined(_WIN32) && defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PHONE_APP) && \
++     WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++    // Phone 8.1 apps cannot query kernel32; GetSystemTimePreciseAsFileTime
++    // does not exist there anyway.
++    HMODULE module = NULL;
++#else
+     HMODULE module = GetModuleHandleW(L"kernel32.dll");
++#endif
+     if (module != NULL) {
+       return (FnGetSystemTimePreciseAsFileTime)GetProcAddress(
+           module, "GetSystemTimePreciseAsFileTime");
 diff --git a/third_party/webrtc/common_audio/BUILD.gn b/third_party/webrtc/common_audio/BUILD.gn
 index 04c7aaa..36923af 100644
 --- a/third_party/webrtc/common_audio/BUILD.gn
@@ -21731,6 +22054,24 @@ index 7b3b430..1c5e023 100644
  #else
    int machine_type = IMAGE_FILE_MACHINE_I386;
    stack_frame.AddrPC.Offset = context_record->Eip;
+diff --git a/v8/src/base/immediate-crash.h b/v8/src/base/immediate-crash.h
+index 9c25a7d..ed7d509 100644
+--- a/v8/src/base/immediate-crash.h
++++ b/v8/src/base/immediate-crash.h
+@@ -125,6 +125,13 @@
+ // https://crbug.com/958373
+ #define TRAP_SEQUENCE2_() __asm volatile("")
+ 
++#elif V8_HOST_ARCH_ARM
++
++// Windows ARM32 (Thumb-2): __debugbreak() emits the Windows breakpoint
++// ("UDF #0xFE"); x86 "int3" is not an ARM instruction.
++#define TRAP_SEQUENCE1_() __debugbreak()
++#define TRAP_SEQUENCE2_() __asm volatile("")
++
+ #else
+ 
+ #define TRAP_SEQUENCE1_() asm volatile("int3")
 diff --git a/v8/src/base/platform/platform-win32.cc b/v8/src/base/platform/platform-win32.cc
 index 47c60a4..7a2813b 100644
 --- a/v8/src/base/platform/platform-win32.cc

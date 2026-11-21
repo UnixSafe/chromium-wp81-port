@@ -1,3 +1,23 @@
+diff --git a/.gn b/.gn
+index 3f592ba..62ec36b 100644
+--- a/.gn
++++ b/.gn
+@@ -12,7 +12,7 @@ import("//third_party/angle/dotfile_settings.gni")
+ buildconfig = "//build/config/BUILDCONFIG.gn"
+ 
+ # The hermetic Python interpreter to use by default.
+-script_executable = "//third_party/cpython3/host/bin/python3"
++script_executable = "/opt/homebrew/bin/python3.12"
+ 
+ # These arguments override the default values for items in a declare_args
+ # block. "gn args" in turn can override these.
+@@ -478,4 +478,4 @@ expand_directory_allowlist =
+ # entries in this list should be reviewed by a member of the chrome build team.
+ allow_circular_includes_from_allowlist =
+     allow_circular_includes_from_untriaged + project_bedrock_circular_includes +
+-    []
+\ No newline at end of file
++    []
 diff --git a/BUILD.gn b/BUILD.gn
 index cdea26b..03b4019 100644
 --- a/BUILD.gn
@@ -190,6 +210,27 @@ index f2e33bd..fa368c6 100644
    if (current_toolchain == default_system_allocator_toolchain) {
      # This binary ends up in the 'system_allocator' build output directory.
      executable("system_allocator_test_helper") {
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/address_space_randomization.cc b/base/allocator/partition_allocator/src/partition_alloc/address_space_randomization.cc
+index a24b552..1437c6e 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/address_space_randomization.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/address_space_randomization.cc
+@@ -32,10 +32,16 @@ uintptr_t GetRandomPageBase() {
+   // excessive fragmentation. Plus most of these systems lack ASLR, so the
+   // randomization isn't buying anything. In that case we just skip it.
+   // TODO(palmer): Just dump the randomization when HE-ASLR is present.
++#if defined(WINUWP_8_1)
++  // Windows Phone 8.1 does not export IsWow64Process to applications; an
++  // ARM32 phone process never runs under WOW64.
++  static BOOL is_wow64 = FALSE;
++#else
+   static BOOL is_wow64 = -1;
+   if (is_wow64 == -1 && !IsWow64Process(GetCurrentProcess(), &is_wow64)) {
+     is_wow64 = FALSE;
+   }
++#endif
+   if (!is_wow64) {
+     return 0;
+   }
 diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc
 index acfe215..5d1c23a 100644
 --- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/debug/stack_trace_win.cc
@@ -267,6 +308,52 @@ index de50df4..531a65f 100644
      const size_t message_len = strlen(message);
  #else   // !PA_BUILDFLAG(IS_WIN)
      const size_t message_len = ::lstrlenA(message);
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/rand_util_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/rand_util_win.cc
+index 1596bc2..01f9be2 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/rand_util_win.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/rand_util_win.cc
+@@ -10,6 +10,11 @@
+ #include <cstdint>
+ #include <limits>
+ 
++#if defined(WINUWP_8_1)
++#include <stdlib.h>
++#include <string.h>
++#endif
++
+ #include "partition_alloc/partition_alloc_base/check.h"
+ #include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
+ 
+@@ -22,6 +27,21 @@ BOOL WINAPI ProcessPrng(PBYTE pbData, SIZE_T cbData);
+ namespace partition_alloc::internal::base {
+ 
+ void RandBytes(void* output, size_t output_length) {
++#if defined(WINUWP_8_1)
++  // Windows Phone 8.1 applications cannot load bcryptprimitives.dll. Use the
++  // CRT's rand_s(), which is backed by the system CSPRNG (RtlGenRandom), as
++  // //base/rand_util_win.cc does.
++  uint8_t* out = static_cast<uint8_t*>(output);
++  while (output_length) {
++    unsigned int value = 0;
++    PA_BASE_CHECK(rand_s(&value) == 0);
++    const size_t count =
++        output_length < sizeof(value) ? output_length : sizeof(value);
++    memcpy(out, &value, count);
++    out += count;
++    output_length -= count;
++  }
++#else
+   // Import bcryptprimitives directly rather than cryptbase to avoid opening a
+   // handle to \\Device\KsecDD in the renderer.
+   // Note: we cannot use a magic static here as PA runs too early in process
+@@ -38,6 +58,7 @@ void RandBytes(void* output, size_t output_length) {
+   BOOL success = process_prng_fn(static_cast<BYTE*>(output), output_length);
+   // ProcessPrng is documented to always return TRUE.
+   PA_BASE_CHECK(success);
++#endif  // defined(WINUWP_8_1)
+ }
+ 
+ }  // namespace partition_alloc::internal::base
 diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc
 index 2156822..671ae3d 100644
 --- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/time/time_win.cc
@@ -319,6 +406,64 @@ index 2156822..671ae3d 100644
  namespace time_internal {
  
  bool HasConstantRateTSC() {
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_root.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_root.cc
+index 5bc7ccd..a125db2 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_root.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_root.cc
+@@ -822,8 +822,11 @@ void PartitionAllocThreadIsolationInit(ThreadIsolationOption thread_isolation) {
+ #if PA_BUILDFLAG(IS_WIN)
+   // If true then we are running on 64-bit Windows.
+   BOOL is_wow_64 = FALSE;
+-  // Intentionally ignoring failures.
++#if !defined(WINUWP_8_1)
++  // Intentionally ignoring failures. (Windows Phone 8.1 does not export
++  // IsWow64Process; an ARM32 phone process never runs under WOW64.)
+   IsWow64Process(GetCurrentProcess(), &is_wow_64);
++#endif
+   // 32-bit address space on Windows is typically either 2 GiB (on 32-bit
+   // Windows) or 4 GiB (on 64-bit Windows). 2.8 and 1.0 GiB are just rough
+   // guesses as to how much address space PA can consume (note that code,
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc
+index df71198..96cdda5 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc
+@@ -160,7 +160,8 @@ void PartitionTlsSetOnDllProcessDetach(void (*callback)()) {
+ // it's not already there.  (e.g. if __declspec(thread) is not used).  Force a
+ // reference to partition_tls_thread_exit_callback to prevent whole program
+ // optimization from discarding the variable.
+-#ifdef _WIN64
++// ARM32 symbols carry no leading underscore either.
++#if defined(_WIN64) || defined(_M_ARM)
+ 
+ #pragma comment(linker, "/INCLUDE:_tls_used")
+ #pragma comment(linker, "/INCLUDE:partition_tls_thread_exit_callback")
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/stack/asm/arm/push_registers_asm.cc b/base/allocator/partition_allocator/src/partition_alloc/stack/asm/arm/push_registers_asm.cc
+index 4a0e0cb..a48168a 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/stack/asm/arm/push_registers_asm.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/stack/asm/arm/push_registers_asm.cc
+@@ -14,9 +14,22 @@
+ // Calling convention source:
+ // https://en.wikipedia.org/wiki/Calling_convention#ARM_(A32)
+ // http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.faqs/ka4127.html
++#if defined(_WIN32)
++// Windows on ARM (Windows Phone 8.1): COFF symbol directives, Thumb-2 only.
++asm(".text                                                \n"
++    ".globl PAPushAllRegistersAndIterateStack             \n"
++    ".def PAPushAllRegistersAndIterateStack               \n"
++    ".scl 2                                               \n"
++    ".type 32                                             \n"
++    ".endef                                               \n"
++    ".p2align 2                                           \n"
++    ".thumb                                               \n"
++    ".thumb_func                                          \n"
++#else
+ asm(".globl PAPushAllRegistersAndIterateStack             \n"
+     ".type PAPushAllRegistersAndIterateStack, %function   \n"
+     ".hidden PAPushAllRegistersAndIterateStack            \n"
++#endif
+     "PAPushAllRegistersAndIterateStack:                   \n"
+     // Push all callee-saved registers and save return address.
+     // Only {r4-r11} are callee-saved registers. Push r3 in addition to align
 diff --git a/base/base_paths_win.cc b/base/base_paths_win.cc
 index 741638e..160d18c 100644
 --- a/base/base_paths_win.cc
@@ -3303,7 +3448,7 @@ index b8147f0..2af3326 100644
  }  // namespace win
  #endif
 diff --git a/base/process/memory_win.cc b/base/process/memory_win.cc
-index 06ad566..7fbf170 100644
+index 06ad566..5dd8454 100644
 --- a/base/process/memory_win.cc
 +++ b/base/process/memory_win.cc
 @@ -13,7 +13,9 @@
@@ -3316,11 +3461,13 @@ index 06ad566..7fbf170 100644
  #include <stddef.h>
  #include <stdlib.h>
  
-@@ -28,13 +30,16 @@ int ReleaseReservationOrTerminate(size_t size) {
+@@ -28,13 +30,18 @@ int ReleaseReservationOrTerminate(size_t size) {
      return kRetryAllocation;
    }
    TerminateBecauseOutOfMemory(size);
++#if !PA_BUILDFLAG(USE_PARTITION_ALLOC)
 +  return 0;
++#endif
  }
  
  }  // namespace
@@ -4527,7 +4674,7 @@ index e3ba14c..ccf1ee5 100644
  
  }  // namespace base
 diff --git a/base/threading/platform_thread_win.cc b/base/threading/platform_thread_win.cc
-index 6f9a4d2..a442ca5 100644
+index 6f9a4d2..424fa3c 100644
 --- a/base/threading/platform_thread_win.cc
 +++ b/base/threading/platform_thread_win.cc
 @@ -26,6 +26,7 @@
@@ -4567,15 +4714,17 @@ index 6f9a4d2..a442ca5 100644
      // When is_wow64 is set that means we are running on 64-bit Windows and we
      // get 4 GiB of address space. In that situation we can afford to use 1 MiB
      // of address space for stacks. When running on 32-bit Windows we only get
-@@ -185,6 +193,7 @@ bool CreateThreadInternal(size_t stack_size,
+@@ -185,6 +193,9 @@ bool CreateThreadInternal(size_t stack_size,
        case ERROR_COMMITMENT_LIMIT:
        case ERROR_COMMITMENT_MINIMUM:
          TerminateBecauseOutOfMemory(stack_size);
++#if !PA_BUILDFLAG(USE_PARTITION_ALLOC)
 +        [[fallthrough]];
++#endif
  
        default:
          static auto* last_error_crash_key = debug::AllocateCrashKeyString(
-@@ -211,7 +220,7 @@ bool CreateThreadInternal(size_t stack_size,
+@@ -211,7 +222,7 @@ bool CreateThreadInternal(size_t stack_size,
  namespace internal {
  
  void AssertMemoryPriority(HANDLE thread, int memory_priority) {
@@ -4584,7 +4733,7 @@ index 6f9a4d2..a442ca5 100644
    static const auto get_thread_information_fn =
        reinterpret_cast<decltype(&::GetThreadInformation)>(::GetProcAddress(
            ::GetModuleHandle(L"Kernel32.dll"), "GetThreadInformation"));
-@@ -267,6 +276,7 @@ void PlatformThread::Sleep(TimeDelta duration) {
+@@ -267,6 +278,7 @@ void PlatformThread::Sleep(TimeDelta duration) {
  void PlatformThread::SetName(const std::string& name) {
    SetNameCommon(name);
  
@@ -4592,7 +4741,7 @@ index 6f9a4d2..a442ca5 100644
    // The SetThreadDescription API works even if no debugger is attached.
    static auto set_thread_description_func =
        reinterpret_cast<SetThreadDescription>(::GetProcAddress(
-@@ -275,6 +285,7 @@ void PlatformThread::SetName(const std::string& name) {
+@@ -275,6 +287,7 @@ void PlatformThread::SetName(const std::string& name) {
      set_thread_description_func(::GetCurrentThread(),
                                  base::UTF8ToWide(name).c_str());
    }
@@ -4600,7 +4749,7 @@ index 6f9a4d2..a442ca5 100644
  
    // The debugger needs to be around to catch the name in the exception.  If
    // there isn't a debugger, we are just needlessly throwing an exception.
-@@ -318,8 +329,12 @@ bool PlatformThread::CreateNonJoinableWithType(size_t stack_size,
+@@ -318,8 +331,12 @@ bool PlatformThread::CreateNonJoinableWithType(size_t stack_size,
  void PlatformThread::Join(PlatformThreadHandle thread_handle) {
    DCHECK(thread_handle.platform_handle());
  
@@ -4613,7 +4762,7 @@ index 6f9a4d2..a442ca5 100644
    DWORD last_error = 0;
    if (!thread_id) {
      last_error = ::GetLastError();
-@@ -335,7 +350,12 @@ void PlatformThread::Join(PlatformThreadHandle thread_handle) {
+@@ -335,7 +352,12 @@ void PlatformThread::Join(PlatformThreadHandle thread_handle) {
    // Wait for the thread to exit.  It should already have terminated but make
    // sure this assumption is valid.
    CHECK_EQ(WAIT_OBJECT_0,
@@ -4626,7 +4775,7 @@ index 6f9a4d2..a442ca5 100644
    CloseHandle(thread_handle.platform_handle());
  }
  
-@@ -356,6 +376,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
+@@ -356,6 +378,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
    PlatformThreadHandle::Handle platform_handle =
        thread_handle.platform_handle();
  
@@ -4634,7 +4783,7 @@ index 6f9a4d2..a442ca5 100644
    if (thread_type != ThreadType::kBackground) {
      // Exit background mode if the new priority is not BACKGROUND. This is a
      // no-op if not in background mode.
-@@ -364,10 +385,14 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
+@@ -364,10 +387,14 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
      // but found that it is not always the case (e.g. in the installer).
      // crbug.com/1340578#c2
    }
@@ -4649,7 +4798,7 @@ index 6f9a4d2..a442ca5 100644
        // Using THREAD_MODE_BACKGROUND_BEGIN instead of THREAD_PRIORITY_LOWEST
        // improves input latency and navigation time. See
        // https://docs.google.com/document/d/16XrOwuwTwKWdgPbcKKajTmNqtB4Am8TgS9GjbzBYLc0
-@@ -376,6 +401,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
+@@ -376,6 +403,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
        // background work, as it reduces disk and memory priority in addition to
        // CPU priority.
        desired_priority = THREAD_MODE_BACKGROUND_BEGIN;
@@ -4657,7 +4806,7 @@ index 6f9a4d2..a442ca5 100644
        break;
      case ThreadType::kUtility:
        desired_priority = THREAD_PRIORITY_BELOW_NORMAL;
-@@ -399,6 +425,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
+@@ -399,6 +427,7 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
    DPLOG_IF(ERROR, !cpu_priority_success)
        << "Failed to set thread priority to " << desired_priority;
  
@@ -4665,7 +4814,7 @@ index 6f9a4d2..a442ca5 100644
    if (thread_type == ThreadType::kBackground) {
      // Override the memory priority.
      MEMORY_PRIORITY_INFORMATION memory_priority{.MemoryPriority =
-@@ -420,10 +447,15 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
+@@ -420,10 +449,15 @@ void SetThreadPriority(PlatformThreadHandle thread_handle,
        // crbug.com/1340578#c2
      }
    }
@@ -4681,7 +4830,7 @@ index 6f9a4d2..a442ca5 100644
    // QoS and power throttling were introduced in Win10 1709.
    bool desire_ecoqos = false;
    switch (thread_type) {
-@@ -452,6 +484,7 @@ void SetThreadQualityOfService(PlatformThreadHandle thread_handle,
+@@ -452,6 +486,7 @@ void SetThreadQualityOfService(PlatformThreadHandle thread_handle,
    // Failure is expected on versions of Windows prior to RS3.
    DPLOG_IF(ERROR, !success && win::GetVersion() >= win::Version::WIN10_RS3)
        << "Failed to set EcoQoS to " << std::boolalpha << desire_ecoqos;
@@ -4689,6 +4838,20 @@ index 6f9a4d2..a442ca5 100644
  }
  
  }  // namespace
+diff --git a/base/threading/thread_local_storage_win.cc b/base/threading/thread_local_storage_win.cc
+index 54583fd..4282a08 100644
+--- a/base/threading/thread_local_storage_win.cc
++++ b/base/threading/thread_local_storage_win.cc
+@@ -46,7 +46,8 @@ void PlatformThreadLocalStorage::SetTLSValue(TLSKey key, void* value) {
+ // if it's not already there.  (e.g. if __declspec(thread) is not used).
+ // Force a reference to p_thread_callback_base to prevent whole program
+ // optimization from discarding the variable.
+-#ifdef _WIN64
++// ARM32 symbols carry no leading underscore either.
++#if defined(_WIN64) || defined(_M_ARM)
+ 
+ #pragma comment(linker, "/INCLUDE:_tls_used")
+ #pragma comment(linker, "/INCLUDE:p_thread_callback_base")
 diff --git a/base/time/time_win.cc b/base/time/time_win.cc
 index e0056dc..a893ca6 100644
 --- a/base/time/time_win.cc
@@ -5757,7 +5920,7 @@ index bf28cd9..fc5b7d3 100644
           const _SYSTEM_INFO& system_info,
           DWORD os_type);
 diff --git a/build/config/BUILD.gn b/build/config/BUILD.gn
-index d2b2454..42aca12 100644
+index d2b2454..805c4bd 100644
 --- a/build/config/BUILD.gn
 +++ b/build/config/BUILD.gn
 @@ -2,6 +2,7 @@
@@ -5768,7 +5931,7 @@ index d2b2454..42aca12 100644
  import("//build/config/c++/c++.gni")
  import("//build/config/cast.gni")
  import("//build/config/chrome_build.gni")
-@@ -151,7 +152,30 @@ config("release") {
+@@ -151,7 +152,37 @@ config("release") {
  
  # This config defines the default libraries applied to all targets.
  config("default_libs") {
@@ -5784,6 +5947,13 @@ index d2b2454..42aca12 100644
 +      "$phone81_vc120_store_lib_dir/oldnames.lib",
 +      "WindowsPhoneCore.lib",
 +      "runtimeobject.lib",
++
++      # Phone system DLLs that applications may import: BSTR/VARIANT/
++      # SAFEARRAY (oleaut32), LoadPackagedLibrary (PhoneAppModelHost) and
++      # locale formatting (WindowsPhoneGlobalizationUtil).
++      "oleaut32.lib",
++      "PhoneAppModelHost.lib",
++      "WindowsPhoneGlobalizationUtil.lib",
 +      "uuid.lib",
 +      "ws2_32.lib",
 +    ]
@@ -5800,7 +5970,7 @@ index d2b2454..42aca12 100644
      # TODO(brettw) this list of defaults should probably be smaller, and
      # instead the targets that use the less common ones (e.g. wininet or
      # winspool) should include those explicitly.
-@@ -288,6 +312,11 @@ group("common_deps") {
+@@ -288,6 +319,11 @@ group("common_deps") {
      public_deps += [ "//buildtools/third_party/libc++" ]
    }
  
@@ -6292,6 +6462,57 @@ index 370e5ad..444398e 100644
  
      if dynamic_guids != 'none':
          assert '=' in dynamic_guids
+diff --git a/build/toolchain/win/phone81_link_wrapper.py b/build/toolchain/win/phone81_link_wrapper.py
+new file mode 100644
+index 0000000..97109bd
+--- /dev/null
++++ b/build/toolchain/win/phone81_link_wrapper.py
+@@ -0,0 +1,45 @@
++#!/usr/bin/env python3
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++"""Runs lld-link for Windows Phone 8.1 without /DELAYLOAD.
++
++A Windows Phone 8.1 application cannot load system DLLs at run time
++(LoadPackagedLibrary only loads files of its own package), so Chromium's
++delay-loaded imports must be ordinary imports there. Targets add /DELAYLOAD
++flags in many places; this wrapper drops them from the command line and from
++response files, then runs the linker unchanged otherwise.
++"""
++
++import os
++import re
++import subprocess
++import sys
++
++_DELAYLOAD = re.compile(r'(?i)(?<!\S)/DELAYLOAD:\S+')
++
++
++def strip_delayload(tokens):
++  return [t for t in tokens if not t.upper().startswith('/DELAYLOAD:')]
++
++
++def main(argv):
++  args = []
++  for arg in argv:
++    if arg.startswith('@') and os.path.exists(arg[1:]):
++      rsp = arg[1:]
++      with open(rsp, encoding='utf-8') as f:
++        content = f.read()
++      # Remove only the /DELAYLOAD tokens; everything else, including
++      # quoting, is left untouched.
++      filtered = rsp + '.phone81'
++      with open(filtered, 'w', encoding='utf-8') as f:
++        f.write(_DELAYLOAD.sub('', content))
++      args.append('@' + filtered)
++    else:
++      args.extend(strip_delayload([arg]))
++  return subprocess.call(args)
++
++
++if __name__ == '__main__':
++  sys.exit(main(sys.argv[1:]))
 diff --git a/build/toolchain/win/setup_toolchain.py b/build/toolchain/win/setup_toolchain.py
 index 34be00a..3799c7e 100644
 --- a/build/toolchain/win/setup_toolchain.py
@@ -6321,6 +6542,32 @@ index 34be00a..3799c7e 100644
      ):
          flags = ['/winsysroot:' + relflag(toolchain_root)]
          print(f'libpath_lldlink_flags = {ListToArgString(flags)}')
+diff --git a/build/toolchain/win/toolchain.gni b/build/toolchain/win/toolchain.gni
+index 9b32ec8..8f88e9e 100644
+--- a/build/toolchain/win/toolchain.gni
++++ b/build/toolchain/win/toolchain.gni
+@@ -6,6 +6,7 @@ import("//build/config/clang/clang.gni")
+ import("//build/config/compiler/compiler.gni")
+ import("//build/config/rust.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
++import("//build/config/win/phone81.gni")
+ import("//build/config/win/visual_studio_version.gni")
+ import("//build/toolchain/cc_wrapper.gni")
+ import("//build/toolchain/rbe.gni")
+@@ -129,6 +130,13 @@ template("msvc_toolchain") {
+ 
+     if (host_os != "win" || (use_lld && defined(invoker.sys_lib_flags))) {
+       linker_wrapper = ""
++      if (target_os == "winuwp" && phone81_port) {
++        # Windows Phone 8.1 cannot delay-load system DLLs; see the script.
++        linker_wrapper =
++            "\"$python_path\" " +
++            rebase_path("//build/toolchain/win/phone81_link_wrapper.py",
++                        root_build_dir) + " "
++      }
+       sys_lib_flags = "${invoker.sys_lib_flags}"
+ 
+       # TODO(thakis): Remove once crbug.com/1300005 is fixed
 diff --git a/build/toolchain/win/win_toolchain_data.gni b/build/toolchain/win/win_toolchain_data.gni
 index bcd7a5f..798899d 100644
 --- a/build/toolchain/win/win_toolchain_data.gni
@@ -6388,10 +6635,10 @@ index 869b764..4cade0a 100755
              f'Visual Studio {version_as_year} using the Visual Studio Installer.',
 diff --git a/build/win/phone81/BUILD.gn b/build/win/phone81/BUILD.gn
 new file mode 100644
-index 0000000..b8bfc2c
+index 0000000..fb729d9
 --- /dev/null
 +++ b/build/win/phone81/BUILD.gn
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,54 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -6418,10 +6665,33 @@ index 0000000..b8bfc2c
 +    "crt_compat_runtime.cc",
 +    "crt_compat_stdio.cc",
 +    "crt_compat_thread_statics.cc",
++    "crt_compat_ws2_data.cc",
 +    "vc120_crt.h",
 +  ]
 +  configs -= [ "//build/config/compiler:chromium_code" ]
 +  configs += [ "//build/config/compiler:no_chromium_code" ]
++}
++
++# Typed failing replacements for desktop Win32 imports that Windows Phone 8.1
++# does not export (see desktop_stubs.h). Only the final browser executable
++# links it, so that libraries keep reporting genuinely missing symbols.
++# Linked as objects (not lazily) so that they take precedence over imports
++# that Windows Phone 8.1 does not export.
++source_set("process_prng") {
++  sources = [ "process_prng.cc" ]
++}
++
++static_library("desktop_stubs") {
++  deps = [ ":process_prng" ]
++  sources = [
++    "desktop_compat_real.cc",
++    "desktop_stubs.h",
++    "desktop_stubs_headers.h",
++    "desktop_stubs_list.cc",
++    "desktop_stubs_report.cc",
++    "desktop_traps.cc",
++  ]
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
 +}
 diff --git a/build/win/phone81/crt_compat_new_aligned.cc b/build/win/phone81/crt_compat_new_aligned.cc
 new file mode 100644
@@ -7144,6 +7414,1500 @@ index 0000000..98709bb
 +}
 +
 +}  // extern "C"
+diff --git a/build/win/phone81/crt_compat_ws2_data.cc b/build/win/phone81/crt_compat_ws2_data.cc
+new file mode 100644
+index 0000000..81b1d42
+--- /dev/null
++++ b/build/win/phone81/crt_compat_ws2_data.cc
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// IPv6 address constants that the Windows Phone 8.1 ws2_32.lib provides only
++// in a member compiled with link-time code generation, which lld-link cannot
++// read (see wp81-port/filter-ltcg-import-libs.py). Values from ws2ipdef.h.
++
++struct Phone81In6Addr {
++  unsigned char bytes[16];
++};
++
++extern "C" {
++extern const Phone81In6Addr in6addr_any;
++extern const Phone81In6Addr in6addr_loopback;
++const Phone81In6Addr in6addr_any = {{0}};
++const Phone81In6Addr in6addr_loopback = {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}};
++}
+diff --git a/build/win/phone81/desktop_compat_real.cc b/build/win/phone81/desktop_compat_real.cc
+new file mode 100644
+index 0000000..4f1409b
+--- /dev/null
++++ b/build/win/phone81/desktop_compat_real.cc
+@@ -0,0 +1,223 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Working implementations of desktop Win32 and CRT functions that Windows
++// Phone 8.1 does not export to applications but that Chromium needs to behave
++// correctly (unlike desktop_stubs_list.cc, whose replacements only fail).
++// Each one is built on APIs the phone does export (WindowsPhoneCore.lib,
++// msvcr120_app.dll) and is installed through the `__imp_` pointer that
++// dllimport callers load, typed from the API's own declaration.
++
++#include <math.h>
++#include <stdlib.h>
++#include <wchar.h>
++
++#include "build/win/phone81/desktop_stubs.h"
++
++#define PHONE81_DESKTOP_REAL(name, impl)                           \
++  extern "C" __attribute__((used)) void* const __imp_##name =     \
++      reinterpret_cast<void*>(static_cast<decltype(&::name)>(&impl));
++
++namespace phone81 {
++namespace {
++
++// WaitForMultipleObjects: same as the exported Ex variant, non-alertable.
++DWORD WINAPI WaitForMultipleObjectsImpl(DWORD count,
++                                        const HANDLE* handles,
++                                        BOOL wait_all,
++                                        DWORD milliseconds) {
++  return ::WaitForMultipleObjectsEx(count, handles, wait_all, milliseconds,
++                                    FALSE);
++}
++
++// RegisterWaitForSingleObject / UnregisterWait(Ex), used by
++// base::win::ObjectWatcher. The phone has no thread pool wait API, so each
++// registration gets a dedicated thread that waits for the object or for its
++// cancellation event.
++struct Registration {
++  HANDLE object;
++  WAITORTIMERCALLBACK callback;
++  void* context;
++  ULONG milliseconds;
++  ULONG flags;
++  HANDLE cancel_event;
++  HANDLE thread;
++  DWORD thread_id;
++  volatile long references;  // The registration handle and the thread.
++};
++
++void Release(Registration* registration) {
++  if (_InterlockedDecrement(&registration->references) == 0) {
++    ::CloseHandle(registration->thread);
++    ::CloseHandle(registration->cancel_event);
++    ::HeapFree(::GetProcessHeap(), 0, registration);
++  }
++}
++
++DWORD WINAPI RegistrationThread(void* parameter) {
++  auto* registration = static_cast<Registration*>(parameter);
++  const HANDLE handles[2] = {registration->cancel_event, registration->object};
++  for (;;) {
++    const DWORD result = ::WaitForMultipleObjectsEx(
++        2, handles, FALSE, registration->milliseconds, FALSE);
++    if (result == WAIT_OBJECT_0 || result == WAIT_FAILED) {
++      break;  // Unregistered (or the object handle became invalid).
++    }
++    const bool timed_out = result == WAIT_TIMEOUT;
++    if (!timed_out && result != WAIT_OBJECT_0 + 1) {
++      break;  // WAIT_ABANDONED and friends: stop watching.
++    }
++    // Do not call back once unregistration has started.
++    if (::WaitForSingleObjectEx(registration->cancel_event, 0, FALSE) ==
++        WAIT_OBJECT_0) {
++      break;
++    }
++    registration->callback(registration->context, timed_out ? TRUE : FALSE);
++    if (registration->flags & WT_EXECUTEONLYONCE) {
++      break;
++    }
++  }
++  Release(registration);
++  return 0;
++}
++
++BOOL WINAPI RegisterWaitForSingleObjectImpl(HANDLE* new_wait_object,
++                                            HANDLE object,
++                                            WAITORTIMERCALLBACK callback,
++                                            void* context,
++                                            ULONG milliseconds,
++                                            ULONG flags) {
++  if (!new_wait_object || !callback) {
++    ::SetLastError(ERROR_INVALID_PARAMETER);
++    return FALSE;
++  }
++  auto* registration = static_cast<Registration*>(
++      ::HeapAlloc(::GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Registration)));
++  if (!registration) {
++    ::SetLastError(ERROR_NOT_ENOUGH_MEMORY);
++    return FALSE;
++  }
++  registration->object = object;
++  registration->callback = callback;
++  registration->context = context;
++  registration->milliseconds = milliseconds;
++  registration->flags = flags;
++  registration->references = 2;
++  registration->cancel_event =
++      ::CreateEventExW(nullptr, nullptr, CREATE_EVENT_MANUAL_RESET,
++                       EVENT_MODIFY_STATE | SYNCHRONIZE);
++  if (!registration->cancel_event) {
++    ::HeapFree(::GetProcessHeap(), 0, registration);
++    return FALSE;
++  }
++  registration->thread =
++      ::CreateThread(nullptr, 64 * 1024, &RegistrationThread, registration,
++                     STACK_SIZE_PARAM_IS_A_RESERVATION,
++                     &registration->thread_id);
++  if (!registration->thread) {
++    ::CloseHandle(registration->cancel_event);
++    ::HeapFree(::GetProcessHeap(), 0, registration);
++    return FALSE;
++  }
++  *new_wait_object = registration;
++  return TRUE;
++}
++
++BOOL WINAPI UnregisterWaitExImpl(HANDLE wait_handle, HANDLE completion_event) {
++  if (!wait_handle) {
++    ::SetLastError(ERROR_INVALID_HANDLE);
++    return FALSE;
++  }
++  auto* registration = static_cast<Registration*>(wait_handle);
++  ::SetEvent(registration->cancel_event);
++  // INVALID_HANDLE_VALUE: wait for a running callback to return, unless this
++  // is that callback's own thread.
++  if (completion_event && ::GetCurrentThreadId() != registration->thread_id) {
++    ::WaitForSingleObjectEx(registration->thread, INFINITE, FALSE);
++    if (completion_event != INVALID_HANDLE_VALUE) {
++      ::SetEvent(completion_event);
++    }
++  }
++  Release(registration);
++  return TRUE;
++}
++
++BOOL WINAPI UnregisterWaitImpl(HANDLE wait_handle) {
++  return UnregisterWaitExImpl(wait_handle, nullptr);
++}
++
++// The packaged application has no command line; //base parses this one.
++wchar_t g_command_line_w[] = L"content_shell.exe";
++char g_command_line_a[] = "content_shell.exe";
++LPWSTR WINAPI GetCommandLineWImpl() {
++  return g_command_line_w;
++}
++LPSTR WINAPI GetCommandLineAImpl() {
++  return g_command_line_a;
++}
++
++int WINAPI lstrlenWImpl(LPCWSTR string) {
++  return string ? static_cast<int>(wcslen(string)) : 0;
++}
++
++// Fixed (LMEM_FIXED) local memory is process-heap memory on Windows NT, which
++// is also what the system's own LocalAlloc callers (FormatMessage...) return.
++HLOCAL WINAPI LocalAllocImpl(UINT flags, SIZE_T bytes) {
++  if (flags & LMEM_MOVEABLE) {
++    ::SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
++    return nullptr;
++  }
++  return ::HeapAlloc(::GetProcessHeap(),
++                     (flags & LMEM_ZEROINIT) ? HEAP_ZERO_MEMORY : 0, bytes);
++}
++
++HLOCAL WINAPI LocalFreeImpl(HLOCAL memory) {
++  if (memory && !::HeapFree(::GetProcessHeap(), 0, memory)) {
++    return memory;
++  }
++  return nullptr;
++}
++
++double __cdecl HypotImpl(double x, double y) {
++  x = fabs(x);
++  y = fabs(y);
++  if (isinf(x) || isinf(y)) {
++    return HUGE_VAL;
++  }
++  if (isnan(x) || isnan(y)) {
++    return x + y;
++  }
++  const double larger = x > y ? x : y;
++  const double smaller = x > y ? y : x;
++  if (larger == 0.0) {
++    return 0.0;
++  }
++  const double ratio = smaller / larger;
++  return larger * sqrt(1.0 + ratio * ratio);
++}
++
++__attribute__((noreturn)) void __cdecl ExitImpl(int status) {
++  ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(status));
++  __builtin_trap();
++}
++
++}  // namespace
++}  // namespace phone81
++
++PHONE81_DESKTOP_REAL(WaitForMultipleObjects,
++                     phone81::WaitForMultipleObjectsImpl)
++PHONE81_DESKTOP_REAL(RegisterWaitForSingleObject,
++                     phone81::RegisterWaitForSingleObjectImpl)
++PHONE81_DESKTOP_REAL(UnregisterWait, phone81::UnregisterWaitImpl)
++PHONE81_DESKTOP_REAL(UnregisterWaitEx, phone81::UnregisterWaitExImpl)
++PHONE81_DESKTOP_REAL(GetCommandLineW, phone81::GetCommandLineWImpl)
++PHONE81_DESKTOP_REAL(GetCommandLineA, phone81::GetCommandLineAImpl)
++PHONE81_DESKTOP_REAL(lstrlenW, phone81::lstrlenWImpl)
++PHONE81_DESKTOP_REAL(LocalAlloc, phone81::LocalAllocImpl)
++PHONE81_DESKTOP_REAL(LocalFree, phone81::LocalFreeImpl)
++// hypot is overloaded in C++ <math.h>: take the C (double) declaration.
++extern "C" __attribute__((used)) void* const __imp_hypot =
++    reinterpret_cast<void*>(static_cast<double(__cdecl*)(double, double)>(
++        &phone81::HypotImpl));
++PHONE81_DESKTOP_REAL(_Exit, phone81::ExitImpl)
+diff --git a/build/win/phone81/desktop_stubs.h b/build/win/phone81/desktop_stubs.h
+new file mode 100644
+index 0000000..3e12472
+--- /dev/null
++++ b/build/win/phone81/desktop_stubs.h
+@@ -0,0 +1,60 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef BUILD_WIN_PHONE81_DESKTOP_STUBS_H_
++#define BUILD_WIN_PHONE81_DESKTOP_STUBS_H_
++
++// Typed failing replacements for desktop Win32 imports that Windows Phone 8.1
++// does not export. Chromium code compiled with desktop declarations still
++// references them; at run time each replacement:
++//  - records its name once (debugger output and an optional hook that the
++//    application can install to write a log file),
++//  - sets the thread's last error to ERROR_CALL_NOT_IMPLEMENTED,
++//  - returns the given failure value, which must be a *failure* for that API
++//    (FALSE/NULL, INVALID_HANDLE_VALUE, E_NOTIMPL, an error status...).
++//
++// A replacement defines the `__imp_` pointer that dllimport callers load, and
++// is typed from the API's own declaration, so a wrong signature fails to
++// compile. Calling conventions all collapse to the AAPCS on ARM.
++//
++// Never use this for APIs whose failure would silently weaken security
++// (random number generation, certificate or crypto primitives): those must
++// have a real implementation or abort.
++
++#include <intrin.h>
++#include <windows.h>
++
++namespace phone81 {
++
++// Records the first call of the named replacement.
++void ReportDesktopStub(const char* name);
++
++}  // namespace phone81
++
++extern "C" {
++// Optional hook, called once per replacement name (from any thread).
++extern void (*phone81_desktop_stub_hook)(const char* name);
++}
++
++#define PHONE81_DESKTOP_STUB(name, failure_value)                           \
++  namespace phone81_desktop_stub_##name {                                   \
++  template <typename F>                                                     \
++  struct Stub;                                                              \
++  template <typename R, typename... Args>                                   \
++  struct Stub<R(Args...)> {                                                 \
++    static R Call(Args...) {                                                \
++      static long reported = 0;                                             \
++      if (!_InterlockedExchange(&reported, 1)) {                            \
++        ::phone81::ReportDesktopStub(#name);                                \
++      }                                                                     \
++      ::SetLastError(ERROR_CALL_NOT_IMPLEMENTED);                           \
++      return (R)(failure_value);                                            \
++    }                                                                       \
++  };                                                                        \
++  }                                                                         \
++  extern "C" __attribute__((used)) void* const __imp_##name =               \
++      reinterpret_cast<void*>(                                              \
++          &phone81_desktop_stub_##name::Stub<decltype(::name)>::Call);
++
++#endif  // BUILD_WIN_PHONE81_DESKTOP_STUBS_H_
+diff --git a/build/win/phone81/desktop_stubs_headers.h b/build/win/phone81/desktop_stubs_headers.h
+new file mode 100644
+index 0000000..fdda721
+--- /dev/null
++++ b/build/win/phone81/desktop_stubs_headers.h
+@@ -0,0 +1,46 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef BUILD_WIN_PHONE81_DESKTOP_STUBS_HEADERS_H_
++#define BUILD_WIN_PHONE81_DESKTOP_STUBS_HEADERS_H_
++
++// Declarations of the desktop Win32 APIs replaced by desktop_stubs_list.cc,
++// from the Windows 10 SDK (this target uses the desktop declarations).
++
++#include "build/win/phone81/desktop_stubs.h"
++
++// windows.h is already included, with all of user32, gdi32, advapi32...
++#include <aclapi.h>
++#include <appmodel.h>
++#include <direct.h>
++#include <cfgmgr32.h>
++#include <commdlg.h>
++#include <dbt.h>
++#include <dwmapi.h>
++#include <imm.h>
++#include <iphlpapi.h>
++#include <lm.h>
++#include <mmsystem.h>
++#include <ole2.h>
++#include <oleacc.h>
++#include <oleauto.h>
++#include <powrprof.h>
++#include <psapi.h>
++#include <sddl.h>
++#include <setupapi.h>
++#include <shellapi.h>
++#include <shellscalingapi.h>
++#include <shlobj.h>
++#include <shlwapi.h>
++#include <tlhelp32.h>
++#include <userenv.h>
++#include <winevt.h>
++#include <winioctl.h>
++#include <wintrust.h>
++#include <wtsapi32.h>
++
++#define SECURITY_WIN32
++#include <security.h>
++
++#endif  // BUILD_WIN_PHONE81_DESKTOP_STUBS_HEADERS_H_
+diff --git a/build/win/phone81/desktop_stubs_list.cc b/build/win/phone81/desktop_stubs_list.cc
+new file mode 100644
+index 0000000..ca154e1
+--- /dev/null
++++ b/build/win/phone81/desktop_stubs_list.cc
+@@ -0,0 +1,200 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// GENERATED by wp81-port/gen-phone81-desktop-stubs.py from the
++// content_shell link: desktop Win32 imports that Windows Phone 8.1 does
++// not export, each with the failure value it returns.
++
++#include "build/win/phone81/desktop_stubs_headers.h"
++
++PHONE81_DESKTOP_STUB(AddClipboardFormatListener, 0)
++PHONE81_DESKTOP_STUB(BeginPaint, 0)
++PHONE81_DESKTOP_STUB(CallNextHookEx, 0)
++PHONE81_DESKTOP_STUB(ClientToScreen, 0)
++PHONE81_DESKTOP_STUB(ClipCursor, 0)
++PHONE81_DESKTOP_STUB(CloseClipboard, 0)
++PHONE81_DESKTOP_STUB(CompareObjectHandles, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(CreateCompatibleDC, 0)
++PHONE81_DESKTOP_STUB(CreateDialogParamW, 0)
++PHONE81_DESKTOP_STUB(CreateFileMappingA, INVALID_HANDLE_VALUE)
++PHONE81_DESKTOP_STUB(CreateFontIndirectW, 0)
++PHONE81_DESKTOP_STUB(CreatePipe, 0)
++PHONE81_DESKTOP_STUB(CreateWindowExW, 0)
++PHONE81_DESKTOP_STUB(DefRawInputProc, 0)
++PHONE81_DESKTOP_STUB(DefWindowProcW, 0)
++PHONE81_DESKTOP_STUB(DeleteDC, 0)
++PHONE81_DESKTOP_STUB(DeleteObject, 0)
++PHONE81_DESKTOP_STUB(DestroyIcon, 0)
++PHONE81_DESKTOP_STUB(DestroyWindow, 0)
++PHONE81_DESKTOP_STUB(DisplayConfigGetDeviceInfo, 0)
++PHONE81_DESKTOP_STUB(DragQueryFileW, 0)
++PHONE81_DESKTOP_STUB(DwmGetCompositionTimingInfo, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(EmptyClipboard, 0)
++PHONE81_DESKTOP_STUB(EnableWindow, 0)
++PHONE81_DESKTOP_STUB(EndPaint, 0)
++PHONE81_DESKTOP_STUB(EnterCriticalPolicySection, 0)
++PHONE81_DESKTOP_STUB(EnumClipboardFormats, 0)
++PHONE81_DESKTOP_STUB(EnumDisplayDevicesW, 0)
++PHONE81_DESKTOP_STUB(EnumDisplayMonitors, 0)
++PHONE81_DESKTOP_STUB(EnumDisplaySettingsW, 0)
++PHONE81_DESKTOP_STUB(EnumThreadWindows, 0)
++PHONE81_DESKTOP_STUB(EnumWindows, 0)
++PHONE81_DESKTOP_STUB(FindWindowW, 0)
++PHONE81_DESKTOP_STUB(FreeEnvironmentStringsW, 0)
++PHONE81_DESKTOP_STUB(GetActiveWindow, 0)
++PHONE81_DESKTOP_STUB(GetAncestor, 0)
++PHONE81_DESKTOP_STUB(GetAsyncKeyState, 0)
++PHONE81_DESKTOP_STUB(GetCapture, 0)
++PHONE81_DESKTOP_STUB(GetClientRect, 0)
++PHONE81_DESKTOP_STUB(GetClipboardData, 0)
++PHONE81_DESKTOP_STUB(GetClipboardFormatNameW, 0)
++PHONE81_DESKTOP_STUB(GetClipboardSequenceNumber, 0)
++PHONE81_DESKTOP_STUB(GetComputerNameW, 0)
++PHONE81_DESKTOP_STUB(GetConsoleScreenBufferInfo, 0)
++PHONE81_DESKTOP_STUB(GetCurrentDirectoryW, 0)
++PHONE81_DESKTOP_STUB(GetCursorPos, 0)
++PHONE81_DESKTOP_STUB(GetDC, 0)
++PHONE81_DESKTOP_STUB(GetDesktopWindow, 0)
++PHONE81_DESKTOP_STUB(GetDisplayConfigBufferSizes, 0)
++PHONE81_DESKTOP_STUB(GetDlgItem, 0)
++PHONE81_DESKTOP_STUB(GetDlgItemTextW, 0)
++PHONE81_DESKTOP_STUB(GetDoubleClickTime, 0)
++PHONE81_DESKTOP_STUB(GetEnvironmentStringsW, 0)
++PHONE81_DESKTOP_STUB(GetEnvironmentVariableW, 0)
++PHONE81_DESKTOP_STUB(GetFirmwareType, 0)
++PHONE81_DESKTOP_STUB(GetFocus, 0)
++PHONE81_DESKTOP_STUB(GetForegroundWindow, 0)
++PHONE81_DESKTOP_STUB(GetKeyState, 0)
++PHONE81_DESKTOP_STUB(GetKeyboardLayout, 0)
++PHONE81_DESKTOP_STUB(GetKeyboardLayoutList, 0)
++PHONE81_DESKTOP_STUB(GetKeyboardLayoutNameW, 0)
++PHONE81_DESKTOP_STUB(GetKeyboardState, 0)
++PHONE81_DESKTOP_STUB(GetLastInputInfo, 0)
++PHONE81_DESKTOP_STUB(GetMessageExtraInfo, 0)
++PHONE81_DESKTOP_STUB(GetMonitorInfoW, 0)
++PHONE81_DESKTOP_STUB(GetPackagePathByFullName, 0)
++PHONE81_DESKTOP_STUB(GetPackagesByPackageFamily, 0)
++PHONE81_DESKTOP_STUB(GetParent, 0)
++PHONE81_DESKTOP_STUB(GetPointerType, 0)
++PHONE81_DESKTOP_STUB(GetPrivateProfileStringW, 0)
++PHONE81_DESKTOP_STUB(GetProfileType, 0)
++PHONE81_DESKTOP_STUB(GetPropW, 0)
++PHONE81_DESKTOP_STUB(GetRawInputData, 0)
++PHONE81_DESKTOP_STUB(GetRawInputDeviceInfoW, 0)
++PHONE81_DESKTOP_STUB(GetRawInputDeviceList, 0)
++PHONE81_DESKTOP_STUB(GetSaveFileNameW, 0)
++PHONE81_DESKTOP_STUB(GetSecurityDescriptorDacl, 0)
++PHONE81_DESKTOP_STUB(GetStdHandle, 0)
++PHONE81_DESKTOP_STUB(GetStockObject, 0)
++PHONE81_DESKTOP_STUB(GetSystemMetrics, 0)
++PHONE81_DESKTOP_STUB(GetSystemPowerStatus, 0)
++PHONE81_DESKTOP_STUB(GetTempFileNameA, 0)
++PHONE81_DESKTOP_STUB(GetTempPathA, 0)
++PHONE81_DESKTOP_STUB(GetTextMetricsW, 0)
++PHONE81_DESKTOP_STUB(GetThreadDesktop, 0)
++PHONE81_DESKTOP_STUB(GetUserDefaultUILanguage, 0)
++PHONE81_DESKTOP_STUB(GetWindow, 0)
++PHONE81_DESKTOP_STUB(GetWindowLongW, 0)
++PHONE81_DESKTOP_STUB(GetWindowRect, 0)
++PHONE81_DESKTOP_STUB(GetWindowTextLengthW, 0)
++PHONE81_DESKTOP_STUB(GetWindowTextW, 0)
++PHONE81_DESKTOP_STUB(GetWindowThreadProcessId, 0)
++PHONE81_DESKTOP_STUB(GlobalAlloc, 0)
++PHONE81_DESKTOP_STUB(GlobalFree, 0)
++PHONE81_DESKTOP_STUB(GlobalLock, 0)
++PHONE81_DESKTOP_STUB(GlobalSize, 0)
++PHONE81_DESKTOP_STUB(GlobalUnlock, 0)
++PHONE81_DESKTOP_STUB(ImpersonateAnonymousToken, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(InvalidateRect, 0)
++PHONE81_DESKTOP_STUB(IsClipboardFormatAvailable, 0)
++PHONE81_DESKTOP_STUB(IsIconic, 0)
++PHONE81_DESKTOP_STUB(IsWindow, 0)
++PHONE81_DESKTOP_STUB(IsWindowEnabled, 0)
++PHONE81_DESKTOP_STUB(IsWindowVisible, 0)
++PHONE81_DESKTOP_STUB(IsWow64Process, 0)
++PHONE81_DESKTOP_STUB(IsZoomed, 0)
++PHONE81_DESKTOP_STUB(LeaveCriticalPolicySection, 0)
++PHONE81_DESKTOP_STUB(LoadCursorW, 0)
++PHONE81_DESKTOP_STUB(LoadIconW, 0)
++PHONE81_DESKTOP_STUB(LoadLibraryA, 0)
++PHONE81_DESKTOP_STUB(LoadLibraryW, 0)
++PHONE81_DESKTOP_STUB(LookupAccountNameW, 0)
++PHONE81_DESKTOP_STUB(MapWindowPoints, 0)
++PHONE81_DESKTOP_STUB(MessageBoxW, 0)
++PHONE81_DESKTOP_STUB(MonitorFromWindow, 0)
++PHONE81_DESKTOP_STUB(NotifyWinEvent, 0)
++PHONE81_DESKTOP_STUB(OleDuplicateData, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(OpenClipboard, 0)
++PHONE81_DESKTOP_STUB(PathFindExtensionW, 0)
++PHONE81_DESKTOP_STUB(PathFindFileNameW, 0)
++PHONE81_DESKTOP_STUB(PathRemoveExtensionW, 0)
++PHONE81_DESKTOP_STUB(PeekMessageW, 0)
++PHONE81_DESKTOP_STUB(PostMessageW, 0)
++PHONE81_DESKTOP_STUB(PostThreadMessageW, 0)
++PHONE81_DESKTOP_STUB(PowerClearRequest, 0)
++PHONE81_DESKTOP_STUB(PowerCreateRequest, 0)
++PHONE81_DESKTOP_STUB(PowerSetRequest, 0)
++PHONE81_DESKTOP_STUB(PrintWindow, 0)
++PHONE81_DESKTOP_STUB(QueryDisplayConfig, 0)
++PHONE81_DESKTOP_STUB(ReadConsoleW, 0)
++PHONE81_DESKTOP_STUB(RegisterClassExW, 0)
++PHONE81_DESKTOP_STUB(RegisterClipboardFormatW, 0)
++PHONE81_DESKTOP_STUB(RegisterDeviceNotificationW, 0)
++PHONE81_DESKTOP_STUB(RegisterGPNotification, 0)
++PHONE81_DESKTOP_STUB(RegisterPowerSettingNotification, 0)
++PHONE81_DESKTOP_STUB(RegisterRawInputDevices, 0)
++PHONE81_DESKTOP_STUB(ReleaseDC, 0)
++PHONE81_DESKTOP_STUB(ReleaseStgMedium, 0)
++PHONE81_DESKTOP_STUB(RemoveClipboardFormatListener, 0)
++PHONE81_DESKTOP_STUB(RemovePropW, 0)
++PHONE81_DESKTOP_STUB(RevertToSelf, 0)
++PHONE81_DESKTOP_STUB(SHCreateItemFromParsingName, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(SHCreateMemStream, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(SHGetDesktopFolder, static_cast<long>(0x80004001L))
++PHONE81_DESKTOP_STUB(SHGetSpecialFolderPathW, 0)
++PHONE81_DESKTOP_STUB(ScreenToClient, 0)
++PHONE81_DESKTOP_STUB(SelectObject, 0)
++PHONE81_DESKTOP_STUB(SetClipboardData, 0)
++PHONE81_DESKTOP_STUB(SetConsoleCtrlHandler, 0)
++PHONE81_DESKTOP_STUB(SetConsoleTextAttribute, 0)
++PHONE81_DESKTOP_STUB(SetCurrentDirectoryW, 0)
++PHONE81_DESKTOP_STUB(SetDIBitsToDevice, 0)
++PHONE81_DESKTOP_STUB(SetDlgItemTextW, 0)
++PHONE81_DESKTOP_STUB(SetEnvironmentVariableW, 0)
++PHONE81_DESKTOP_STUB(SetKeyboardState, 0)
++PHONE81_DESKTOP_STUB(SetParent, 0)
++PHONE81_DESKTOP_STUB(SetRect, 0)
++PHONE81_DESKTOP_STUB(SetSecurityInfo, 0)
++PHONE81_DESKTOP_STUB(SetStdHandle, 0)
++PHONE81_DESKTOP_STUB(SetWinEventHook, 0)
++PHONE81_DESKTOP_STUB(SetWindowLongW, 0)
++PHONE81_DESKTOP_STUB(SetWindowPos, 0)
++PHONE81_DESKTOP_STUB(SetWindowsHookExW, 0)
++PHONE81_DESKTOP_STUB(SetupDiGetDevicePropertyW, 0)
++PHONE81_DESKTOP_STUB(ShellExecuteW, 0)
++PHONE81_DESKTOP_STUB(ShowWindow, 0)
++PHONE81_DESKTOP_STUB(SystemParametersInfoW, 0)
++PHONE81_DESKTOP_STUB(ToUnicodeEx, 0)
++PHONE81_DESKTOP_STUB(TrackMouseEvent, 0)
++PHONE81_DESKTOP_STUB(UnhookWinEvent, 0)
++PHONE81_DESKTOP_STUB(UnhookWindowsHookEx, 0)
++PHONE81_DESKTOP_STUB(UnregisterDeviceNotification, 0)
++PHONE81_DESKTOP_STUB(UnregisterGPNotification, 0)
++PHONE81_DESKTOP_STUB(UnregisterPowerSettingNotification, 0)
++PHONE81_DESKTOP_STUB(UpdateLayeredWindow, 0)
++PHONE81_DESKTOP_STUB(WindowFromPoint, 0)
++PHONE81_DESKTOP_STUB(WriteConsoleW, 0)
++PHONE81_DESKTOP_STUB(_getcwd, 0)
++PHONE81_DESKTOP_STUB(_set_thread_local_invalid_parameter_handler, 0)
++PHONE81_DESKTOP_STUB(getenv, 0)
++PHONE81_DESKTOP_STUB(waveInGetNumDevs, 8)
++PHONE81_DESKTOP_STUB(waveOutClose, 8)
++PHONE81_DESKTOP_STUB(waveOutGetNumDevs, 8)
++PHONE81_DESKTOP_STUB(waveOutOpen, 8)
++PHONE81_DESKTOP_STUB(waveOutPause, 8)
++PHONE81_DESKTOP_STUB(waveOutPrepareHeader, 8)
++PHONE81_DESKTOP_STUB(waveOutReset, 8)
++PHONE81_DESKTOP_STUB(waveOutRestart, 8)
++PHONE81_DESKTOP_STUB(waveOutUnprepareHeader, 8)
++PHONE81_DESKTOP_STUB(waveOutWrite, 8)
+diff --git a/build/win/phone81/desktop_stubs_report.cc b/build/win/phone81/desktop_stubs_report.cc
+new file mode 100644
+index 0000000..a94d025
+--- /dev/null
++++ b/build/win/phone81/desktop_stubs_report.cc
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "build/win/phone81/desktop_stubs.h"
++
++extern "C" {
++void (*phone81_desktop_stub_hook)(const char* name) = nullptr;
++}
++
++namespace phone81 {
++
++void ReportDesktopStub(const char* name) {
++  ::OutputDebugStringA("phone81: unsupported desktop API called: ");
++  ::OutputDebugStringA(name);
++  ::OutputDebugStringA("\n");
++  if (auto* hook = phone81_desktop_stub_hook) {
++    hook(name);
++  }
++}
++
++}  // namespace phone81
++
++extern "C" void __cdecl abort(void);
++
++namespace phone81 {
++
++[[noreturn]] void DesktopTrap(const char* name) {
++  ::OutputDebugStringA("phone81: desktop-only code reached, terminating: ");
++  ::OutputDebugStringA(name);
++  ::OutputDebugStringA("\n");
++  if (auto* hook = phone81_desktop_stub_hook) {
++    hook(name);
++  }
++  abort();
++  // Not reached: abort() terminates the process.
++  __builtin_trap();
++}
++
++}  // namespace phone81
+diff --git a/build/win/phone81/desktop_traps.cc b/build/win/phone81/desktop_traps.cc
+new file mode 100644
+index 0000000..f12cb2b
+--- /dev/null
++++ b/build/win/phone81/desktop_traps.cc
+@@ -0,0 +1,824 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// GENERATED by wp81-port/gen-phone81-desktop-stubs.py from the
++// content_shell link. Symbols of desktop-only or disabled code that the
++// Windows Phone 8.1 link cannot resolve. This file includes no Windows
++// header, so that it can define symbols the SDK headers declare
++// differently.
++
++#include <stdint.h>
++
++extern "C" {
++__declspec(dllimport) void __stdcall SetLastError(unsigned long);
++}
++
++namespace phone81 {
++void ReportDesktopStub(const char* name);
++[[noreturn]] void DesktopTrap(const char* name);
++}  // namespace phone81
++
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_0[64] __asm__("AMPROPSETID_Pin") = {};
++extern "C" long phone81_sym_1() __asm__("AccessibleChildren");
++extern "C" long phone81_sym_1() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("AccessibleChildren");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_2() __asm__("AccessibleObjectFromWindow");
++extern "C" long phone81_sym_2() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("AccessibleObjectFromWindow");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_3[64] __asm__("CLSID_CaptureGraphBuilder2") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_4[64] __asm__("CLSID_FilterGraph") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_5[64] __asm__("CLSID_SpObjectTokenCategory") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_6[64] __asm__("CLSID_SpVoice") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_7[64] __asm__("CLSID_SystemDeviceEnum") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_8[64] __asm__("CLSID_VideoInputDeviceCategory") = {};
++extern "C" long phone81_sym_9() __asm__("ConvertSidToStringSidA");
++extern "C" long phone81_sym_9() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("ConvertSidToStringSidA");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_10() __asm__("ConvertStringSecurityDescriptorToSecurityDescriptorW");
++extern "C" long phone81_sym_10() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("ConvertStringSecurityDescriptorToSecurityDescriptorW");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_11() __asm__("CreateStdAccessibleObject");
++extern "C" long phone81_sym_11() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("CreateStdAccessibleObject");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_12() __asm__("CryptProtectMemory");
++extern "C" long phone81_sym_12() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("CryptProtectMemory");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_13() __asm__("CryptUnprotectMemory");
++extern "C" long phone81_sym_13() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("CryptUnprotectMemory");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_14() __asm__("D3D12CreateDevice");
++extern "C" long phone81_sym_14() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("D3D12CreateDevice");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_15() __asm__("DCompositionCreateDevice");
++extern "C" long phone81_sym_15() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("DCompositionCreateDevice");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_16() __asm__("EvtClose");
++extern "C" long phone81_sym_16() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("EvtClose");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_17() __asm__("EvtCreateRenderContext");
++extern "C" long phone81_sym_17() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("EvtCreateRenderContext");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_18() __asm__("EvtNext");
++extern "C" long phone81_sym_18() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("EvtNext");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_19() __asm__("EvtQuery");
++extern "C" long phone81_sym_19() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("EvtQuery");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_20() __asm__("EvtRender");
++extern "C" long phone81_sym_20() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("EvtRender");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_21[64] __asm__("FORMAT_VideoInfo") = {};
++extern "C" long phone81_sym_22() __asm__("GetFileVersionInfoSizeW");
++extern "C" long phone81_sym_22() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("GetFileVersionInfoSizeW");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_23() __asm__("GetFileVersionInfoW");
++extern "C" long phone81_sym_23() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("GetFileVersionInfoW");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_24() __asm__("GetUserNameExW");
++extern "C" long phone81_sym_24() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("GetUserNameExW");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_25() __asm__("HidD_GetProductString");
++extern "C" long phone81_sym_25() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidD_GetProductString");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_26() __asm__("HidP_GetButtonCaps");
++extern "C" long phone81_sym_26() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetButtonCaps");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" long phone81_sym_27() __asm__("HidP_GetCaps");
++extern "C" long phone81_sym_27() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetCaps");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" long phone81_sym_28() __asm__("HidP_GetScaledUsageValue");
++extern "C" long phone81_sym_28() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetScaledUsageValue");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" long phone81_sym_29() __asm__("HidP_GetUsageValue");
++extern "C" long phone81_sym_29() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetUsageValue");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" long phone81_sym_30() __asm__("HidP_GetUsagesEx");
++extern "C" long phone81_sym_30() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetUsagesEx");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" long phone81_sym_31() __asm__("HidP_GetValueCaps");
++extern "C" long phone81_sym_31() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("HidP_GetValueCaps");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_32[64] __asm__("IID_IAMStreamConfig") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_33[64] __asm__("IID_IEnumMediaTypes") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_34[64] __asm__("IID_IEnumPins") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_35[64] __asm__("IID_IMFCameraControlNotify") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_36[64] __asm__("IID_IMFSensorActivitiesReportCallback") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_37[64] __asm__("IID_IMediaFilter") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_38[64] __asm__("IID_IMemInputPin") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_39[64] __asm__("IID_IPin") = {};
++extern "C" long phone81_sym_40() __asm__("K32GetModuleInformation");
++extern "C" long phone81_sym_40() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("K32GetModuleInformation");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_41() __asm__("K32GetPerformanceInfo");
++extern "C" long phone81_sym_41() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("K32GetPerformanceInfo");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_42() __asm__("K32GetProcessMemoryInfo");
++extern "C" long phone81_sym_42() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("K32GetProcessMemoryInfo");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_43() __asm__("LresultFromObject");
++extern "C" long phone81_sym_43() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("LresultFromObject");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_44[64] __asm__("MEDIASUBTYPE_ARGB32") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_45[64] __asm__("MEDIASUBTYPE_IYUV") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_46[64] __asm__("MEDIASUBTYPE_MJPG") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_47[64] __asm__("MEDIASUBTYPE_RGB24") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_48[64] __asm__("MEDIASUBTYPE_RGB32") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_49[64] __asm__("MEDIASUBTYPE_UYVY") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_50[64] __asm__("MEDIASUBTYPE_YUY2") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_51[64] __asm__("MEDIATYPE_Interleaved") = {};
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_52[64] __asm__("MEDIATYPE_Video") = {};
++extern "C" long phone81_sym_53() __asm__("NetApiBufferFree");
++extern "C" long phone81_sym_53() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("NetApiBufferFree");
++  }
++  SetLastError(120);
++  return 120;
++}
++extern "C" long phone81_sym_54() __asm__("NetGetJoinInformation");
++extern "C" long phone81_sym_54() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("NetGetJoinInformation");
++  }
++  SetLastError(120);
++  return 120;
++}
++extern "C" long phone81_sym_55() __asm__("NtQuerySystemInformation");
++extern "C" long phone81_sym_55() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("NtQuerySystemInformation");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" __attribute__((aligned(8))) uint8_t phone81_sym_56[64] __asm__("PIN_CATEGORY_CAPTURE") = {};
++extern "C" long phone81_sym_57() __asm__("QISearch");
++extern "C" long phone81_sym_57() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("QISearch");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_58() __asm__("SHGetKnownFolderPath");
++extern "C" long phone81_sym_58() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("SHGetKnownFolderPath");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_59() __asm__("UiaDisconnectAllProviders");
++extern "C" long phone81_sym_59() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaDisconnectAllProviders");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_60() __asm__("UiaDisconnectProvider");
++extern "C" long phone81_sym_60() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaDisconnectProvider");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_61() __asm__("UiaGetReservedMixedAttributeValue");
++extern "C" long phone81_sym_61() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaGetReservedMixedAttributeValue");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_62() __asm__("UiaGetReservedNotSupportedValue");
++extern "C" long phone81_sym_62() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaGetReservedNotSupportedValue");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_63() __asm__("UiaHostProviderFromHwnd");
++extern "C" long phone81_sym_63() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaHostProviderFromHwnd");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_64() __asm__("UiaRaiseAutomationEvent");
++extern "C" long phone81_sym_64() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaRaiseAutomationEvent");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_65() __asm__("UiaRaiseAutomationPropertyChangedEvent");
++extern "C" long phone81_sym_65() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaRaiseAutomationPropertyChangedEvent");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_66() __asm__("UiaRaiseStructureChangedEvent");
++extern "C" long phone81_sym_66() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaRaiseStructureChangedEvent");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_67() __asm__("UiaReturnRawElementProvider");
++extern "C" long phone81_sym_67() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("UiaReturnRawElementProvider");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_68() __asm__("VerQueryValueW");
++extern "C" long phone81_sym_68() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("VerQueryValueW");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_69() __asm__("WTSFreeMemory");
++extern "C" long phone81_sym_69() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("WTSFreeMemory");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_70() __asm__("WTSQuerySessionInformationW");
++extern "C" long phone81_sym_70() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("WTSQuerySessionInformationW");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_71() __asm__("WTSRegisterSessionNotification");
++extern "C" long phone81_sym_71() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("WTSRegisterSessionNotification");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_72() __asm__("WTSUnRegisterSessionNotification");
++extern "C" long phone81_sym_72() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("WTSUnRegisterSessionNotification");
++  }
++  SetLastError(120);
++  return 0;
++}
++extern "C" long phone81_sym_73() __asm__("WindowFromAccessibleObject");
++extern "C" long phone81_sym_73() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("WindowFromAccessibleObject");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_sym_74() __asm__("__HrLoadAllImportsForDll");
++extern "C" long phone81_sym_74() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("__HrLoadAllImportsForDll");
++  }
++  SetLastError(120);
++  return static_cast<long>(0x80004001L);
++}
++extern "C" long phone81_imp_NtCreateNamedPipeFile() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("NtCreateNamedPipeFile");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" __attribute__((used)) void* const __imp_NtCreateNamedPipeFile =
++    reinterpret_cast<void*>(&phone81_imp_NtCreateNamedPipeFile);
++extern "C" long phone81_imp_NtSetInformationFile() {
++  static long reported = 0;
++  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED)) {
++    phone81::ReportDesktopStub("NtSetInformationFile");
++  }
++  SetLastError(120);
++  return static_cast<long>(0xC0000002L);
++}
++extern "C" __attribute__((used)) void* const __imp_NtSetInformationFile =
++    reinterpret_cast<void*>(&phone81_imp_NtSetInformationFile);
++extern "C" void phone81_sym_75() __asm__("?CreateLocalWmiConnection@win@base@@YA_N_NPAV?$ComPtr@UIWbemServices@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_75() { phone81::DesktopTrap("bool __cdecl base::win::CreateLocalWmiConnection(bool, class Microsoft::WRL::ComPtr<struct IWbemServices> *)"); }
++extern "C" void phone81_sym_76() __asm__("?DenyAccessToPath@win@base@@YA_NABVFilePath@2@ABV?$vector@VSid@win@base@@V?$allocator@VSid@win@base@@@__Cr@std@@@__Cr@std@@KK_N@Z");
++extern "C" void phone81_sym_76() { phone81::DesktopTrap("bool __cdecl base::win::DenyAccessToPath(class base::FilePath const &, class std::__Cr::vector<class base::win::Sid, class std::__Cr::allocator<class base::win::Sid>> const &, unsigned long, unsigned long, bool)"); }
++extern "C" void phone81_sym_77() __asm__("?EnableStrictHandleCheckingForCurrentProcess@win@base@@YA_NXZ");
++extern "C" void phone81_sym_77() { phone81::DesktopTrap("bool __cdecl base::win::EnableStrictHandleCheckingForCurrentProcess(void)"); }
++extern "C" void phone81_sym_78() __asm__("?GetLoadedModulesSnapshot@win@base@@YA_NPAXPAV?$vector@PAUHINSTANCE__@@V?$allocator@PAUHINSTANCE__@@@__Cr@std@@@__Cr@std@@@Z");
++extern "C" void phone81_sym_78() { phone81::DesktopTrap("bool __cdecl base::win::GetLoadedModulesSnapshot(void *, class std::__Cr::vector<struct HINSTANCE__*, class std::__Cr::allocator<struct HINSTANCE__*>> *)"); }
++extern "C" void phone81_sym_79() __asm__("?GetPointerDevice@win@base@@YA_NPAXAAUtagPOINTER_DEVICE_INFO@@@Z");
++extern "C" void phone81_sym_79() { phone81::DesktopTrap("bool __cdecl base::win::GetPointerDevice(void *, struct tagPOINTER_DEVICE_INFO &)"); }
++extern "C" void phone81_sym_80() __asm__("?GrantAccessToPath@win@base@@YA_NABVFilePath@2@ABV?$vector@VSid@win@base@@V?$allocator@VSid@win@base@@@__Cr@std@@@__Cr@std@@KK_N@Z");
++extern "C" void phone81_sym_80() { phone81::DesktopTrap("bool __cdecl base::win::GrantAccessToPath(class base::FilePath const &, class std::__Cr::vector<class base::win::Sid, class std::__Cr::allocator<class base::win::Sid>> const &, unsigned long, unsigned long, bool)"); }
++extern "C" void phone81_sym_81() __asm__("?HasAccessToPath@win@base@@YA_NABVFilePath@2@ABV?$vector@VSid@win@base@@V?$allocator@VSid@win@base@@@__Cr@std@@@__Cr@std@@KK@Z");
++extern "C" void phone81_sym_81() { phone81::DesktopTrap("bool __cdecl base::win::HasAccessToPath(class base::FilePath const &, class std::__Cr::vector<class base::win::Sid, class std::__Cr::allocator<class base::win::Sid>> const &, unsigned long, unsigned long)"); }
++extern "C" void phone81_sym_82() __asm__("?IsDeviceJoinedToAzureAD@win@base@@YA_NXZ");
++extern "C" void phone81_sym_82() { phone81::DesktopTrap("bool __cdecl base::win::IsDeviceJoinedToAzureAD(void)"); }
++extern "C" void phone81_sym_83() __asm__("?IsDeviceRegisteredWithManagement@win@base@@YA_NXZ");
++extern "C" void phone81_sym_83() { phone81::DesktopTrap("bool __cdecl base::win::IsDeviceRegisteredWithManagement(void)"); }
++extern "C" void phone81_sym_84() __asm__("?IsDeviceUsedAsATablet@win@base@@YA_NPAV?$basic_string@DU?$char_traits@D@__Cr@std@@V?$allocator@D@23@@__Cr@std@@@Z");
++extern "C" void phone81_sym_84() { phone81::DesktopTrap("bool __cdecl base::win::IsDeviceUsedAsATablet(class std::__Cr::basic_string<char, struct std::__Cr::char_traits<char>, class std::__Cr::allocator<char>> *)"); }
++extern "C" void phone81_sym_85() __asm__("?IsEnrolledToDomain@win@base@@YA_NXZ");
++extern "C" void phone81_sym_85() { phone81::DesktopTrap("bool __cdecl base::win::IsEnrolledToDomain(void)"); }
++extern "C" void phone81_sym_86() __asm__("?IsJoinedToAzureAD@win@base@@YA_NXZ");
++extern "C" void phone81_sym_86() { phone81::DesktopTrap("bool __cdecl base::win::IsJoinedToAzureAD(void)"); }
++extern "C" void phone81_sym_87() __asm__("?IsUser32AndGdi32Available@win@base@@YA_NXZ");
++extern "C" void phone81_sym_87() { phone81::DesktopTrap("bool __cdecl base::win::IsUser32AndGdi32Available(void)"); }
++extern "C" void phone81_sym_88() __asm__("?IsWindows10TabletMode@win@base@@YA_NPAUHWND__@@@Z");
++extern "C" void phone81_sym_88() { phone81::DesktopTrap("bool __cdecl base::win::IsWindows10TabletMode(struct HWND__*)"); }
++extern "C" void phone81_sym_89() __asm__("?ResolveShortcut@win@base@@YA_NABVFilePath@2@PAV32@PAV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@@Z");
++extern "C" void phone81_sym_89() { phone81::DesktopTrap("bool __cdecl base::win::ResolveShortcut(class base::FilePath const &, class base::FilePath *, class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> *)"); }
++extern "C" void phone81_sym_90() __asm__("?SetProcessTimerThrottleState@win@base@@YA_NPAXW4ProcessPowerState@12@@Z");
++extern "C" void phone81_sym_90() { phone81::DesktopTrap("bool __cdecl base::win::SetProcessTimerThrottleState(void *, enum base::win::ProcessPowerState)"); }
++extern "C" void phone81_sym_91() __asm__("?IsTextureSubresourceInitialized@native@dawn@@YA_NPAUWGPUTextureImpl@@IIIIW4WGPUTextureAspect@@@Z");
++extern "C" void phone81_sym_91() { phone81::DesktopTrap("bool __cdecl dawn::native::IsTextureSubresourceInitialized(struct WGPUTextureImpl *, unsigned int, unsigned int, unsigned int, unsigned int, enum WGPUTextureAspect)"); }
++extern "C" void phone81_sym_92() __asm__("?IsWindowCloaked@gfx@@YA_NPAUHWND__@@@Z");
++extern "C" void phone81_sym_92() { phone81::DesktopTrap("bool __cdecl gfx::IsWindowCloaked(struct HWND__*)"); }
++extern "C" void phone81_sym_93() __asm__("?IsWindowVisibleAndFullyOpaque@gfx@@YA_NPAUHWND__@@PAVRect@1@@Z");
++extern "C" void phone81_sym_93() { phone81::DesktopTrap("bool __cdecl gfx::IsWindowVisibleAndFullyOpaque(struct HWND__*, class gfx::Rect *)"); }
++extern "C" void phone81_sym_94() __asm__("?StderrSupportsColor@base@perfetto@@YA_NXZ");
++extern "C" void phone81_sym_94() { phone81::DesktopTrap("bool __cdecl perfetto::base::StderrSupportsColor(void)"); }
++extern "C" void phone81_sym_95() __asm__("?GetD3D11Device@d3d11@native@dawn@@YA?AV?$ComPtr@UID3D11Device@@@WRL@Microsoft@@PAUWGPUDeviceImpl@@@Z");
++extern "C" void phone81_sym_95() { phone81::DesktopTrap("class Microsoft::WRL::ComPtr<struct ID3D11Device> __cdecl dawn::native::d3d11::GetD3D11Device(struct WGPUDeviceImpl *)"); }
++extern "C" void phone81_sym_96() __asm__("?GetOrCreateD3D11On12Device@d3d12@native@dawn@@YA?AV?$ComPtr@UID3D11On12Device@@@WRL@Microsoft@@PAUWGPUDeviceImpl@@@Z");
++extern "C" void phone81_sym_96() { phone81::DesktopTrap("class Microsoft::WRL::ComPtr<struct ID3D11On12Device> __cdecl dawn::native::d3d12::GetOrCreateD3D11On12Device(struct WGPUDeviceImpl *)"); }
++extern "C" void phone81_sym_97() __asm__("?GetD3D12Device@d3d12@native@dawn@@YA?AV?$ComPtr@UID3D12Device@@@WRL@Microsoft@@PAUWGPUDeviceImpl@@@Z");
++extern "C" void phone81_sym_97() { phone81::DesktopTrap("class Microsoft::WRL::ComPtr<struct ID3D12Device> __cdecl dawn::native::d3d12::GetD3D12Device(struct WGPUDeviceImpl *)"); }
++extern "C" void phone81_sym_98() __asm__("?GetObjectTypeName@win@base@@YA?AV?$expected@V?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@J@2@PAX@Z");
++extern "C" void phone81_sym_98() { phone81::DesktopTrap("class base::expected<class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>>, long> __cdecl base::win::GetObjectTypeName(void *)"); }
++extern "C" void phone81_sym_99() __asm__("?GetScreenWin@win@display@@YAPAVScreenWin@12@XZ");
++extern "C" void phone81_sym_99() { phone81::DesktopTrap("class display::win::ScreenWin * __cdecl display::win::GetScreenWin(void)"); }
++extern "C" void phone81_sym_100() __asm__("?ExportJson@json@trace_processor@perfetto@@YA?AVStatus@base@3@PAVTraceProcessorStorage@23@PAVOutputWriter@123@V?$function@$$A6A_NPBD0PAV?$function@$$A6A_NPBD@Z@__Cr@std@@@Z@__Cr@std@@V?$function@$$A6A_NPBD@Z@9std@@3@Z");
++extern "C" void phone81_sym_100() { phone81::DesktopTrap("class perfetto::base::Status __cdecl perfetto::trace_processor::json::ExportJson(class perfetto::trace_processor::TraceProcessorStorage *, class perfetto::trace_processor::json::OutputWriter *, class std::__Cr::function<bool __cdecl(char const *, char const *, class std::__Cr::function<bool __cdecl(char const *)> *)>, class std::__Cr::function<bool __cdecl(char const *)>, class std::__Cr::function<bool __cdecl(char const *)>)"); }
++extern "C" void phone81_sym_101() __asm__("?WStringFromGUID@win@base@@YA?AV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@ABU_GUID@@@Z");
++extern "C" void phone81_sym_101() { phone81::DesktopTrap("class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> __cdecl base::win::WStringFromGUID(struct _GUID const &)"); }
++extern "C" void phone81_sym_102() __asm__("?GetClassNameW@gfx@@YA?AV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@PAUHWND__@@@Z");
++extern "C" void phone81_sym_102() { phone81::DesktopTrap("class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> __cdecl gfx::GetClassNameW(struct HWND__*)"); }
++extern "C" void phone81_sym_103() __asm__("?IsWindowOnCurrentVirtualDesktop@gfx@@YA?AV?$optional@_N@__Cr@std@@PAUHWND__@@V?$ComPtr@UIVirtualDesktopManager@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_103() { phone81::DesktopTrap("class std::__Cr::optional<bool> __cdecl gfx::IsWindowOnCurrentVirtualDesktop(struct HWND__*, class Microsoft::WRL::ComPtr<struct IVirtualDesktopManager>)"); }
++extern "C" void phone81_sym_104() __asm__("?ExpandEnvironmentVariables@win@base@@YA?AV?$optional@V?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@@__Cr@std@@V?$basic_cstring_view@_W@2@@Z");
++extern "C" void phone81_sym_104() { phone81::DesktopTrap("class std::__Cr::optional<class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>>> __cdecl base::win::ExpandEnvironmentVariables(class base::basic_cstring_view<wchar_t>)"); }
++extern "C" void phone81_sym_105() __asm__("?GetPointerDevices@win@base@@YA?AV?$optional@V?$vector@UtagPOINTER_DEVICE_INFO@@V?$allocator@UtagPOINTER_DEVICE_INFO@@@__Cr@std@@@__Cr@std@@@__Cr@std@@XZ");
++extern "C" void phone81_sym_105() { phone81::DesktopTrap("class std::__Cr::optional<class std::__Cr::vector<struct tagPOINTER_DEVICE_INFO, class std::__Cr::allocator<struct tagPOINTER_DEVICE_INFO>>> __cdecl base::win::GetPointerDevices(void)"); }
++extern "C" void phone81_sym_106() __asm__("?GetAzureADJoinType@win@base@@YA?AV?$optional@W4AzureADJoinType@win@base@@@__Cr@std@@XZ");
++extern "C" void phone81_sym_106() { phone81::DesktopTrap("class std::__Cr::optional<enum base::win::AzureADJoinType> __cdecl base::win::GetAzureADJoinType(void)"); }
++extern "C" void phone81_sym_107() __asm__("?GetDisplayConfigPathInfo@win@display@@YA?AV?$optional@UDISPLAYCONFIG_PATH_INFO@@@__Cr@std@@PAUHMONITOR__@@@Z");
++extern "C" void phone81_sym_107() { phone81::DesktopTrap("class std::__Cr::optional<struct DISPLAYCONFIG_PATH_INFO> __cdecl display::win::GetDisplayConfigPathInfo(struct HMONITOR__*)"); }
++extern "C" void phone81_sym_108() __asm__("?GetGrantedAccess@win@base@@YA?AV?$optional@K@__Cr@std@@PAX@Z");
++extern "C" void phone81_sym_108() { phone81::DesktopTrap("class std::__Cr::optional<unsigned long> __cdecl base::win::GetGrantedAccess(void *)"); }
++extern "C" void phone81_sym_109() __asm__("?CreateFullScreenWinApplicationHandler@webrtc@@YA?AV?$unique_ptr@VFullScreenApplicationHandler@webrtc@@U?$default_delete@VFullScreenApplicationHandler@webrtc@@@__Cr@std@@@__Cr@std@@H@Z");
++extern "C" void phone81_sym_109() { phone81::DesktopTrap("class std::__Cr::unique_ptr<class webrtc::FullScreenApplicationHandler, struct std::__Cr::default_delete<class webrtc::FullScreenApplicationHandler>> __cdecl webrtc::CreateFullScreenWinApplicationHandler(int)"); }
++extern "C" void phone81_sym_110() __asm__("?CallExceptionFilter@win@base@@YAHPAU_EXCEPTION_POINTERS@@@Z");
++extern "C" void phone81_sym_110() { phone81::DesktopTrap("int __cdecl base::win::CallExceptionFilter(struct _EXCEPTION_POINTERS *)"); }
++extern "C" void phone81_sym_111() __asm__("??1D3DSharedFence@gfx@@AAA@XZ");
++extern "C" void phone81_sym_111() { phone81::DesktopTrap("private: __cdecl gfx::D3DSharedFence::~D3DSharedFence(void)"); }
++extern "C" void phone81_sym_112() __asm__("??1DawnSharedTextureCache@gpu@@AAA@XZ");
++extern "C" void phone81_sym_112() { phone81::DesktopTrap("private: __cdecl gpu::DawnSharedTextureCache::~DawnSharedTextureCache(void)"); }
++extern "C" void phone81_sym_113() __asm__("?OnWndProc@WindowImpl@gfx@@MAAJIIJ@Z");
++extern "C" void phone81_sym_113() { phone81::DesktopTrap("protected: virtual long __cdecl gfx::WindowImpl::OnWndProc(unsigned int, unsigned int, long)"); }
++extern "C" void phone81_sym_114() __asm__("??1AccessToken@win@base@@QAA@XZ");
++extern "C" void phone81_sym_114() { phone81::DesktopTrap("public: __cdecl base::win::AccessToken::~AccessToken(void)"); }
++extern "C" void phone81_sym_115() __asm__("??0EtwTraceProvider@win@base@@QAA@XZ");
++extern "C" void phone81_sym_115() { phone81::DesktopTrap("public: __cdecl base::win::EtwTraceProvider::EtwTraceProvider(void)"); }
++extern "C" void phone81_sym_116() __asm__("??0MessageWindow@win@base@@QAA@XZ");
++extern "C" void phone81_sym_116() { phone81::DesktopTrap("public: __cdecl base::win::MessageWindow::MessageWindow(void)"); }
++extern "C" void phone81_sym_117() __asm__("??1MessageWindow@win@base@@QAA@XZ");
++extern "C" void phone81_sym_117() { phone81::DesktopTrap("public: __cdecl base::win::MessageWindow::~MessageWindow(void)"); }
++extern "C" void phone81_sym_118() __asm__("??0RegKey@win@base@@QAA@PAUHKEY__@@PB_WK@Z");
++extern "C" void phone81_sym_118() { phone81::DesktopTrap("public: __cdecl base::win::RegKey::RegKey(struct HKEY__*, wchar_t const *, unsigned long)"); }
++extern "C" void phone81_sym_119() __asm__("??0RegKey@win@base@@QAA@XZ");
++extern "C" void phone81_sym_119() { phone81::DesktopTrap("public: __cdecl base::win::RegKey::RegKey(void)"); }
++extern "C" void phone81_sym_120() __asm__("??1RegKey@win@base@@QAA@XZ");
++extern "C" void phone81_sym_120() { phone81::DesktopTrap("public: __cdecl base::win::RegKey::~RegKey(void)"); }
++extern "C" void phone81_sym_121() __asm__("??0RegistryKeyIterator@win@base@@QAA@PAUHKEY__@@PB_W@Z");
++extern "C" void phone81_sym_121() { phone81::DesktopTrap("public: __cdecl base::win::RegistryKeyIterator::RegistryKeyIterator(struct HKEY__*, wchar_t const *)"); }
++extern "C" void phone81_sym_122() __asm__("??1RegistryKeyIterator@win@base@@QAA@XZ");
++extern "C" void phone81_sym_122() { phone81::DesktopTrap("public: __cdecl base::win::RegistryKeyIterator::~RegistryKeyIterator(void)"); }
++extern "C" void phone81_sym_123() __asm__("??0RegistryValueIterator@win@base@@QAA@PAUHKEY__@@PB_W@Z");
++extern "C" void phone81_sym_123() { phone81::DesktopTrap("public: __cdecl base::win::RegistryValueIterator::RegistryValueIterator(struct HKEY__*, wchar_t const *)"); }
++extern "C" void phone81_sym_124() __asm__("??1RegistryValueIterator@win@base@@QAA@XZ");
++extern "C" void phone81_sym_124() { phone81::DesktopTrap("public: __cdecl base::win::RegistryValueIterator::~RegistryValueIterator(void)"); }
++extern "C" void phone81_sym_125() __asm__("??1ScopedProcessInformation@win@base@@QAA@XZ");
++extern "C" void phone81_sym_125() { phone81::DesktopTrap("public: __cdecl base::win::ScopedProcessInformation::~ScopedProcessInformation(void)"); }
++extern "C" void phone81_sym_126() __asm__("??1SecurityDescriptor@win@base@@QAA@XZ");
++extern "C" void phone81_sym_126() { phone81::DesktopTrap("public: __cdecl base::win::SecurityDescriptor::~SecurityDescriptor(void)"); }
++extern "C" void phone81_sym_127() __asm__("??1Sid@win@base@@QAA@XZ");
++extern "C" void phone81_sym_127() { phone81::DesktopTrap("public: __cdecl base::win::Sid::~Sid(void)"); }
++extern "C" void phone81_sym_128() __asm__("??0WindowImpl@gfx@@QAA@ABV?$basic_string@DU?$char_traits@D@__Cr@std@@V?$allocator@D@23@@__Cr@std@@@Z");
++extern "C" void phone81_sym_128() { phone81::DesktopTrap("public: __cdecl gfx::WindowImpl::WindowImpl(class std::__Cr::basic_string<char, struct std::__Cr::char_traits<char>, class std::__Cr::allocator<char>> const &)"); }
++extern "C" void phone81_sym_129() __asm__("??0DCompPresenter@gl@@QAA@ABUSettings@01@@Z");
++extern "C" void phone81_sym_129() { phone81::DesktopTrap("public: __cdecl gl::DCompPresenter::DCompPresenter(struct gl::DCompPresenter::Settings const &)"); }
++extern "C" void phone81_sym_130() __asm__("??0DawnSharedTextureCache@gpu@@QAA@XZ");
++extern "C" void phone81_sym_130() { phone81::DesktopTrap("public: __cdecl gpu::DawnSharedTextureCache::DawnSharedTextureCache(void)"); }
++extern "C" void phone81_sym_131() __asm__("??0PagedMemory@base@perfetto@@QAA@XZ");
++extern "C" void phone81_sym_131() { phone81::DesktopTrap("public: __cdecl perfetto::base::PagedMemory::PagedMemory(void)"); }
++extern "C" void phone81_sym_132() __asm__("??1PagedMemory@base@perfetto@@QAA@XZ");
++extern "C" void phone81_sym_132() { phone81::DesktopTrap("public: __cdecl perfetto::base::PagedMemory::~PagedMemory(void)"); }
++extern "C" void phone81_sym_133() __asm__("??0TraceBlob@trace_processor@perfetto@@QAA@$$QAV012@@Z");
++extern "C" void phone81_sym_133() { phone81::DesktopTrap("public: __cdecl perfetto::trace_processor::TraceBlob::TraceBlob(class perfetto::trace_processor::TraceBlob &&)"); }
++extern "C" void phone81_sym_134() __asm__("??1TraceBlob@trace_processor@perfetto@@QAA@XZ");
++extern "C" void phone81_sym_134() { phone81::DesktopTrap("public: __cdecl perfetto::trace_processor::TraceBlob::~TraceBlob(void)"); }
++extern "C" void phone81_sym_135() __asm__("??0OutputWriter@json@trace_processor@perfetto@@QAA@XZ");
++extern "C" void phone81_sym_135() { phone81::DesktopTrap("public: __cdecl perfetto::trace_processor::json::OutputWriter::OutputWriter(void)"); }
++extern "C" void phone81_sym_136() __asm__("??0WasmModuleCompilation@v8@@QAA@ABUCompileOptions@WasmModuleObject@1@@Z");
++extern "C" void phone81_sym_136() { phone81::DesktopTrap("public: __cdecl v8::WasmModuleCompilation::WasmModuleCompilation(struct v8::WasmModuleObject::CompileOptions const &)"); }
++extern "C" void phone81_sym_137() __asm__("??1WasmModuleCompilation@v8@@QAA@XZ");
++extern "C" void phone81_sym_137() { phone81::DesktopTrap("public: __cdecl v8::WasmModuleCompilation::~WasmModuleCompilation(void)"); }
++extern "C" void phone81_sym_138() __asm__("?IsAppContainer@AccessToken@win@base@@QBA_NXZ");
++extern "C" void phone81_sym_138() { phone81::DesktopTrap("public: bool __cdecl base::win::AccessToken::IsAppContainer(void) const"); }
++extern "C" void phone81_sym_139() __asm__("?IsElevated@AccessToken@win@base@@QBA_NXZ");
++extern "C" void phone81_sym_139() { phone81::DesktopTrap("public: bool __cdecl base::win::AccessToken::IsElevated(void) const"); }
++extern "C" void phone81_sym_140() __asm__("?SetIntegrityLevel@AccessToken@win@base@@QAA_NK@Z");
++extern "C" void phone81_sym_140() { phone81::DesktopTrap("public: bool __cdecl base::win::AccessToken::SetIntegrityLevel(unsigned long)"); }
++extern "C" void phone81_sym_141() __asm__("?Create@MessageWindow@win@base@@QAA_NV?$RepeatingCallback@$$A6A_NIIJPAJ@Z@3@@Z");
++extern "C" void phone81_sym_141() { phone81::DesktopTrap("public: bool __cdecl base::win::MessageWindow::Create(class base::RepeatingCallback<bool __cdecl(unsigned int, unsigned int, long, long *)>)"); }
++extern "C" void phone81_sym_142() __asm__("?StartWatching@RegKey@win@base@@QAA_NV?$OnceCallback@$$A6AXXZ@3@@Z");
++extern "C" void phone81_sym_142() { phone81::DesktopTrap("public: bool __cdecl base::win::RegKey::StartWatching(class base::OnceCallback<void __cdecl(void)>)"); }
++extern "C" void phone81_sym_143() __asm__("?Valid@RegistryKeyIterator@win@base@@QBA_NXZ");
++extern "C" void phone81_sym_143() { phone81::DesktopTrap("public: bool __cdecl base::win::RegistryKeyIterator::Valid(void) const"); }
++extern "C" void phone81_sym_144() __asm__("?Valid@RegistryValueIterator@win@base@@QBA_NXZ");
++extern "C" void phone81_sym_144() { phone81::DesktopTrap("public: bool __cdecl base::win::RegistryValueIterator::Valid(void) const"); }
++extern "C" void phone81_sym_145() __asm__("?IncrementAndSignalD3D11@D3DSharedFence@gfx@@QAA_NXZ");
++extern "C" void phone81_sym_145() { phone81::DesktopTrap("public: bool __cdecl gfx::D3DSharedFence::IncrementAndSignalD3D11(void)"); }
++extern "C" void phone81_sym_146() __asm__("?IncrementAndSignalD3D12@D3DSharedFence@gfx@@QAA_NXZ");
++extern "C" void phone81_sym_146() { phone81::DesktopTrap("public: bool __cdecl gfx::D3DSharedFence::IncrementAndSignalD3D12(void)"); }
++extern "C" void phone81_sym_147() __asm__("?IsSameFenceAsHandle@D3DSharedFence@gfx@@QBA_NPAX@Z");
++extern "C" void phone81_sym_147() { phone81::DesktopTrap("public: bool __cdecl gfx::D3DSharedFence::IsSameFenceAsHandle(void *) const"); }
++extern "C" void phone81_sym_148() __asm__("?WaitD3D11@D3DSharedFence@gfx@@QAA_NV?$ComPtr@UID3D11Device@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_148() { phone81::DesktopTrap("public: bool __cdecl gfx::D3DSharedFence::WaitD3D11(class Microsoft::WRL::ComPtr<struct ID3D11Device>)"); }
++extern "C" void phone81_sym_149() __asm__("?WaitD3D12@D3DSharedFence@gfx@@QAA_NV?$ComPtr@UID3D12CommandQueue@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_149() { phone81::DesktopTrap("public: bool __cdecl gfx::D3DSharedFence::WaitD3D12(class Microsoft::WRL::ComPtr<struct ID3D12CommandQueue>)"); }
++extern "C" void phone81_sym_150() __asm__("?InitCompleted@ProcessState@sandbox@@QBA_NXZ");
++extern "C" void phone81_sym_150() { phone81::DesktopTrap("public: bool __cdecl sandbox::ProcessState::InitCompleted(void) const"); }
++extern "C" void phone81_sym_151() __asm__("?GetD3D12Fence@D3DSharedFence@gfx@@QBA?AV?$ComPtr@UID3D12Fence@@@WRL@Microsoft@@XZ");
++extern "C" void phone81_sym_151() { phone81::DesktopTrap("public: class Microsoft::WRL::ComPtr<struct ID3D12Fence> __cdecl gfx::D3DSharedFence::GetD3D12Fence(void) const"); }
++extern "C" void phone81_sym_152() __asm__("?RegisterCallback@SingletonHwnd@gfx@@QAA?AVCallbackListSubscription@base@@V?$RepeatingCallback@$$A6AXPAUHWND__@@IIJ@Z@4@@Z");
++extern "C" void phone81_sym_152() { phone81::DesktopTrap("public: class base::CallbackListSubscription __cdecl gfx::SingletonHwnd::RegisterCallback(class base::RepeatingCallback<void __cdecl(struct HWND__*, unsigned int, unsigned int, long)>)"); }
++extern "C" void phone81_sym_153() __asm__("?GetDXGIHandleToken@D3DSharedFence@gfx@@QBAABV?$TokenType@VDXGIHandleTokenTypeMarker@gfx@@@base@@XZ");
++extern "C" void phone81_sym_153() { phone81::DesktopTrap("public: class base::TokenType<class gfx::DXGIHandleTokenTypeMarker> const & __cdecl gfx::D3DSharedFence::GetDXGIHandleToken(void) const"); }
++extern "C" void phone81_sym_154() __asm__("?CloneSharedHandle@D3DSharedFence@gfx@@QAA?AV?$GenericScopedHandle@VHandleTraits@win@base@@VVerifierTraits@23@@win@base@@XZ");
++extern "C" void phone81_sym_154() { phone81::DesktopTrap("public: class base::win::GenericScopedHandle<class base::win::HandleTraits, class base::win::VerifierTraits> __cdecl gfx::D3DSharedFence::CloneSharedHandle(void)"); }
++extern "C" void phone81_sym_155() __asm__("??4PagedMemory@base@perfetto@@QAAAAV012@$$QAV012@@Z");
++extern "C" void phone81_sym_155() { phone81::DesktopTrap("public: class perfetto::base::PagedMemory & __cdecl perfetto::base::PagedMemory::operator=(class perfetto::base::PagedMemory &&)"); }
++extern "C" void phone81_sym_156() __asm__("?AccessCheck@SecurityDescriptor@win@base@@QAA?AV?$optional@UAccessCheckResult@win@base@@@__Cr@std@@ABVAccessToken@23@KW4SecurityObjectType@23@@Z");
++extern "C" void phone81_sym_156() { phone81::DesktopTrap("public: class std::__Cr::optional<struct base::win::AccessCheckResult> __cdecl base::win::SecurityDescriptor::AccessCheck(class base::win::AccessToken const &, unsigned long, enum base::win::SecurityObjectType)"); }
++extern "C" void phone81_sym_157() __asm__("?GetDevice@DawnContextProvider@gpu@@QBA?AVDevice@wgpu@@XZ");
++extern "C" void phone81_sym_157() { phone81::DesktopTrap("public: class wgpu::Device __cdecl gpu::DawnContextProvider::GetDevice(void) const"); }
++extern "C" void phone81_sym_158() __asm__("?GetDevice@SkiaGraphiteDawnImageRepresentation@gpu@@QBA?AVDevice@wgpu@@XZ");
++extern "C" void phone81_sym_158() { phone81::DesktopTrap("public: class wgpu::Device __cdecl gpu::SkiaGraphiteDawnImageRepresentation::GetDevice(void) const"); }
++extern "C" void phone81_sym_159() __asm__("?GetSharedTextureMemory@DawnSharedTextureCache@gpu@@QAA?AVSharedTextureMemory@wgpu@@ABVDevice@4@@Z");
++extern "C" void phone81_sym_159() { phone81::DesktopTrap("public: class wgpu::SharedTextureMemory __cdecl gpu::DawnSharedTextureCache::GetSharedTextureMemory(class wgpu::Device const &)"); }
++extern "C" void phone81_sym_160() __asm__("?GetCachedWGPUTexture@DawnSharedTextureCache@gpu@@QAA?AVTexture@wgpu@@ABVDevice@4@W4TextureUsage@4@1ABV?$vector@W4TextureFormat@wgpu@@V?$allocator@W4TextureFormat@wgpu@@@__Cr@std@@@__Cr@std@@@Z");
++extern "C" void phone81_sym_160() { phone81::DesktopTrap("public: class wgpu::Texture __cdecl gpu::DawnSharedTextureCache::GetCachedWGPUTexture(class wgpu::Device const &, enum wgpu::TextureUsage, enum wgpu::TextureUsage, class std::__Cr::vector<enum wgpu::TextureFormat, class std::__Cr::allocator<enum wgpu::TextureFormat>> const &)"); }
++extern "C" void phone81_sym_161() __asm__("?Create@RegKey@win@base@@QAAJPAUHKEY__@@PB_WK@Z");
++extern "C" void phone81_sym_161() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::Create(struct HKEY__*, wchar_t const *, unsigned long)"); }
++extern "C" void phone81_sym_162() __asm__("?DeleteKey@RegKey@win@base@@QAAJPB_WV?$StrongAlias@VRecursiveDeleteTag@win@base@@_N@3@@Z");
++extern "C" void phone81_sym_162() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::DeleteKey(wchar_t const *, class base::StrongAlias<class base::win::RecursiveDeleteTag, bool>)"); }
++extern "C" void phone81_sym_163() __asm__("?DeleteValue@RegKey@win@base@@QAAJPB_W@Z");
++extern "C" void phone81_sym_163() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::DeleteValue(wchar_t const *)"); }
++extern "C" void phone81_sym_164() __asm__("?Open@RegKey@win@base@@QAAJPAUHKEY__@@PB_WK@Z");
++extern "C" void phone81_sym_164() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::Open(struct HKEY__*, wchar_t const *, unsigned long)"); }
++extern "C" void phone81_sym_165() __asm__("?ReadValue@RegKey@win@base@@QBAJPB_WPAV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@@Z");
++extern "C" void phone81_sym_165() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::ReadValue(wchar_t const *, class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> *) const"); }
++extern "C" void phone81_sym_166() __asm__("?ReadValue@RegKey@win@base@@QBAJPB_WPAXPAK2@Z");
++extern "C" void phone81_sym_166() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::ReadValue(wchar_t const *, void *, unsigned long *, unsigned long *) const"); }
++extern "C" void phone81_sym_167() __asm__("?ReadValueDW@RegKey@win@base@@QBAJPB_WPAK@Z");
++extern "C" void phone81_sym_167() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::ReadValueDW(wchar_t const *, unsigned long *) const"); }
++extern "C" void phone81_sym_168() __asm__("?WriteValue@RegKey@win@base@@QAAJPB_WK@Z");
++extern "C" void phone81_sym_168() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::WriteValue(wchar_t const *, unsigned long)"); }
++extern "C" void phone81_sym_169() __asm__("?WriteValue@RegKey@win@base@@QAAJPB_W0@Z");
++extern "C" void phone81_sym_169() { phone81::DesktopTrap("public: long __cdecl base::win::RegKey::WriteValue(wchar_t const *, wchar_t const *)"); }
++extern "C" void phone81_sym_170() __asm__("?IsSupported@D3DSharedFence@gfx@@SA_NPAUID3D11Device@@@Z");
++extern "C" void phone81_sym_170() { phone81::DesktopTrap("public: static bool __cdecl gfx::D3DSharedFence::IsSupported(struct ID3D11Device *)"); }
++extern "C" void phone81_sym_171() __asm__("?CreateSkBitmapFromHICON@IconUtil@@SA?AVSkBitmap@@PAUHICON__@@@Z");
++extern "C" void phone81_sym_171() { phone81::DesktopTrap("public: static class SkBitmap __cdecl IconUtil::CreateSkBitmapFromHICON(struct HICON__*)"); }
++extern "C" void phone81_sym_172() __asm__("?CreateCursorFromSkBitmap@IconUtil@@SA?AV?$ScopedGeneric@PAUHICON__@@U?$ScopedGDIObjectTraits@PAUHICON__@@@internal@win@base@@@base@@ABVSkBitmap@@ABVPoint@gfx@@@Z");
++extern "C" void phone81_sym_172() { phone81::DesktopTrap("public: static class base::ScopedGeneric<struct HICON__*, struct base::win::internal::ScopedGDIObjectTraits<struct HICON__*>> __cdecl IconUtil::CreateCursorFromSkBitmap(class SkBitmap const &, class gfx::Point const &)"); }
++extern "C" void phone81_sym_173() __asm__("?Get@WmiComputerSystemInfo@win@base@@SA?AV123@XZ");
++extern "C" void phone81_sym_173() { phone81::DesktopTrap("public: static class base::win::WmiComputerSystemInfo __cdecl base::win::WmiComputerSystemInfo::Get(void)"); }
++extern "C" void phone81_sym_174() __asm__("?GetHotSpotFromHICON@IconUtil@@SA?AVPoint@gfx@@PAUHICON__@@@Z");
++extern "C" void phone81_sym_174() { phone81::DesktopTrap("public: static class gfx::Point __cdecl IconUtil::GetHotSpotFromHICON(struct HICON__*)"); }
++extern "C" void phone81_sym_175() __asm__("?GetInstance@SingletonHwnd@gfx@@SAPAV12@XZ");
++extern "C" void phone81_sym_175() { phone81::DesktopTrap("public: static class gfx::SingletonHwnd * __cdecl gfx::SingletonHwnd::GetInstance(void)"); }
++extern "C" void phone81_sym_176() __asm__("?Allocate@PagedMemory@base@perfetto@@SA?AV123@IH@Z");
++extern "C" void phone81_sym_176() { phone81::DesktopTrap("public: static class perfetto::base::PagedMemory __cdecl perfetto::base::PagedMemory::Allocate(unsigned int, int)"); }
++extern "C" void phone81_sym_177() __asm__("?GetInstance@ProgressReporter@base@perfetto@@SAAAV123@XZ");
++extern "C" void phone81_sym_177() { phone81::DesktopTrap("public: static class perfetto::base::ProgressReporter & __cdecl perfetto::base::ProgressReporter::GetInstance(void)"); }
++extern "C" void phone81_sym_178() __asm__("?CopyFrom@TraceBlob@trace_processor@perfetto@@SA?AV123@PBXI@Z");
++extern "C" void phone81_sym_178() { phone81::DesktopTrap("public: static class perfetto::trace_processor::TraceBlob __cdecl perfetto::trace_processor::TraceBlob::CopyFrom(void const *, unsigned int)"); }
++extern "C" void phone81_sym_179() __asm__("?CreateForD3D11@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@V?$ComPtr@UID3D11Device@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_179() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateForD3D11(class Microsoft::WRL::ComPtr<struct ID3D11Device>)"); }
++extern "C" void phone81_sym_180() __asm__("?CreateForD3D12@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@V?$ComPtr@UID3D12CommandQueue@@@WRL@Microsoft@@@Z");
++extern "C" void phone81_sym_180() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateForD3D12(class Microsoft::WRL::ComPtr<struct ID3D12CommandQueue>)"); }
++extern "C" void phone81_sym_181() __asm__("?CreateFromD3D11Fence@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@V?$ComPtr@UID3D11Device@@@WRL@Microsoft@@V?$ComPtr@UID3D11Fence@@@56@_K@Z");
++extern "C" void phone81_sym_181() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateFromD3D11Fence(class Microsoft::WRL::ComPtr<struct ID3D11Device>, class Microsoft::WRL::ComPtr<struct ID3D11Fence>, unsigned __int64)"); }
++extern "C" void phone81_sym_182() __asm__("?CreateFromD3D12Fence@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@V?$ComPtr@UID3D12Fence@@@WRL@Microsoft@@_K@Z");
++extern "C" void phone81_sym_182() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateFromD3D12Fence(class Microsoft::WRL::ComPtr<struct ID3D12Fence>, unsigned __int64)"); }
++extern "C" void phone81_sym_183() __asm__("?CreateFromScopedHandle@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@V?$GenericScopedHandle@VHandleTraits@win@base@@VVerifierTraits@23@@win@base@@ABV?$TokenType@VDXGIHandleTokenTypeMarker@gfx@@@6@@Z");
++extern "C" void phone81_sym_183() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateFromScopedHandle(class base::win::GenericScopedHandle<class base::win::HandleTraits, class base::win::VerifierTraits>, class base::TokenType<class gfx::DXGIHandleTokenTypeMarker> const &)"); }
++extern "C" void phone81_sym_184() __asm__("?CreateFromUnownedHandle@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@PAX@Z");
++extern "C" void phone81_sym_184() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateFromUnownedHandle(void *)"); }
++extern "C" void phone81_sym_185() __asm__("?CreateFromUnownedHandleAndOpenD3D12Fence@D3DSharedFence@gfx@@SA?AV?$scoped_refptr@VD3DSharedFence@gfx@@@@PAUID3D12Device@@PAX@Z");
++extern "C" void phone81_sym_185() { phone81::DesktopTrap("public: static class scoped_refptr<class gfx::D3DSharedFence> __cdecl gfx::D3DSharedFence::CreateFromUnownedHandleAndOpenD3D12Fence(struct ID3D12Device *, void *)"); }
++extern "C" void phone81_sym_186() __asm__("?MakeFromStream@DWriteFontTypeface@@SA?AV?$sk_sp@VSkTypeface@@@@V?$unique_ptr@VSkStreamAsset@@U?$default_delete@VSkStreamAsset@@@__Cr@std@@@__Cr@std@@ABUSkFontArguments@@@Z");
++extern "C" void phone81_sym_186() { phone81::DesktopTrap("public: static class sk_sp<class SkTypeface> __cdecl DWriteFontTypeface::MakeFromStream(class std::__Cr::unique_ptr<class SkStreamAsset, struct std::__Cr::default_delete<class SkStreamAsset>>, struct SkFontArguments const &)"); }
++extern "C" void phone81_sym_187() __asm__("?FromCurrentProcess@AccessToken@win@base@@SA?AV?$optional@VAccessToken@win@base@@@__Cr@std@@_NK@Z");
++extern "C" void phone81_sym_187() { phone81::DesktopTrap("public: static class std::__Cr::optional<class base::win::AccessToken> __cdecl base::win::AccessToken::FromCurrentProcess(bool, unsigned long)"); }
++extern "C" void phone81_sym_188() __asm__("?FromProcess@AccessToken@win@base@@SA?AV?$optional@VAccessToken@win@base@@@__Cr@std@@PAX_NK@Z");
++extern "C" void phone81_sym_188() { phone81::DesktopTrap("public: static class std::__Cr::optional<class base::win::AccessToken> __cdecl base::win::AccessToken::FromProcess(void *, bool, unsigned long)"); }
++extern "C" void phone81_sym_189() __asm__("?FromHandle@SecurityDescriptor@win@base@@SA?AV?$optional@VSecurityDescriptor@win@base@@@__Cr@std@@PAXW4SecurityObjectType@23@K@Z");
++extern "C" void phone81_sym_189() { phone81::DesktopTrap("public: static class std::__Cr::optional<class base::win::SecurityDescriptor> __cdecl base::win::SecurityDescriptor::FromHandle(void *, enum base::win::SecurityObjectType, unsigned long)"); }
++extern "C" void phone81_sym_190() __asm__("?FromSddlStringVector@Sid@win@base@@SA?AV?$optional@V?$vector@VSid@win@base@@V?$allocator@VSid@win@base@@@__Cr@std@@@__Cr@std@@@__Cr@std@@V?$span@$$CBV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@$0PPPPPPPP@PBV123@@3@@Z");
++extern "C" void phone81_sym_190() { phone81::DesktopTrap("public: static class std::__Cr::optional<class std::__Cr::vector<class base::win::Sid, class std::__Cr::allocator<class base::win::Sid>>> __cdecl base::win::Sid::FromSddlStringVector(class base::span<class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> const, 4294967295, class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> const *>)"); }
++extern "C" void phone81_sym_191() __asm__("?CreateInstance@TraceProcessorStorage@trace_processor@perfetto@@SA?AV?$unique_ptr@VTraceProcessorStorage@trace_processor@perfetto@@U?$default_delete@VTraceProcessorStorage@trace_processor@perfetto@@@__Cr@std@@@__Cr@std@@ABUConfig@23@@Z");
++extern "C" void phone81_sym_191() { phone81::DesktopTrap("public: static class std::__Cr::unique_ptr<class perfetto::trace_processor::TraceProcessorStorage, struct std::__Cr::default_delete<class perfetto::trace_processor::TraceProcessorStorage>> __cdecl perfetto::trace_processor::TraceProcessorStorage::CreateInstance(struct perfetto::trace_processor::Config const &)"); }
++extern "C" void phone81_sym_192() __asm__("?CreateCapturer@CroppingWindowCapturer@webrtc@@SA?AV?$unique_ptr@VDesktopCapturer@webrtc@@U?$default_delete@VDesktopCapturer@webrtc@@@__Cr@std@@@__Cr@std@@ABVDesktopCaptureOptions@2@@Z");
++extern "C" void phone81_sym_192() { phone81::DesktopTrap("public: static class std::__Cr::unique_ptr<class webrtc::DesktopCapturer, struct std::__Cr::default_delete<class webrtc::DesktopCapturer>> __cdecl webrtc::CroppingWindowCapturer::CreateCapturer(class webrtc::DesktopCaptureOptions const &)"); }
++extern "C" void phone81_sym_193() __asm__("?FromNamedCapabilityVector@Sid@win@base@@SA?AV?$vector@VSid@win@base@@V?$allocator@VSid@win@base@@@__Cr@std@@@__Cr@std@@V?$span@$$CBV?$basic_string@_WU?$char_traits@_W@__Cr@std@@V?$allocator@_W@23@@__Cr@std@@$0PPPPPPPP@PBV123@@3@@Z");
++extern "C" void phone81_sym_193() { phone81::DesktopTrap("public: static class std::__Cr::vector<class base::win::Sid, class std::__Cr::allocator<class base::win::Sid>> __cdecl base::win::Sid::FromNamedCapabilityVector(class base::span<class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> const, 4294967295, class std::__Cr::basic_string<wchar_t, struct std::__Cr::char_traits<wchar_t>, class std::__Cr::allocator<wchar_t>> const *>)"); }
++extern "C" void phone81_sym_194() __asm__("?ClampAccCodecBitrate@MFAudioEncoder@media@@SAII@Z");
++extern "C" void phone81_sym_194() { phone81::DesktopTrap("public: static unsigned int __cdecl media::MFAudioEncoder::ClampAccCodecBitrate(unsigned int)"); }
++extern "C" void phone81_sym_195() __asm__("?Free@?$ScopedGDIObjectTraits@PAUHBITMAP__@@@internal@win@base@@SAXPAUHBITMAP__@@@Z");
++extern "C" void phone81_sym_195() { phone81::DesktopTrap("public: static void __cdecl base::win::internal::ScopedGDIObjectTraits<struct HBITMAP__*>::Free(struct HBITMAP__*)"); }
++extern "C" void phone81_sym_196() __asm__("?Free@?$ScopedGDIObjectTraits@PAUHICON__@@@internal@win@base@@SAXPAUHICON__@@@Z");
++extern "C" void phone81_sym_196() { phone81::DesktopTrap("public: static void __cdecl base::win::internal::ScopedGDIObjectTraits<struct HICON__*>::Free(struct HICON__*)"); }
++extern "C" void phone81_sym_197() __asm__("?GetFenceValue@D3DSharedFence@gfx@@QBA_KXZ");
++extern "C" void phone81_sym_197() { phone81::DesktopTrap("public: unsigned __int64 __cdecl gfx::D3DSharedFence::GetFenceValue(void) const"); }
++extern "C" void phone81_sym_198() __asm__("?IntegrityLevel@AccessToken@win@base@@QBAKXZ");
++extern "C" void phone81_sym_198() { phone81::DesktopTrap("public: unsigned long __cdecl base::win::AccessToken::IntegrityLevel(void) const"); }
++extern "C" void phone81_sym_199() __asm__("?Log@EtwTraceProvider@win@base@@QAAKPAU_EVENT_TRACE_HEADER@@@Z");
++extern "C" void phone81_sym_199() { phone81::DesktopTrap("public: unsigned long __cdecl base::win::EtwTraceProvider::Log(struct _EVENT_TRACE_HEADER *)"); }
++extern "C" void phone81_sym_200() __asm__("?Register@EtwTraceProvider@win@base@@QAAKXZ");
++extern "C" void phone81_sym_200() { phone81::DesktopTrap("public: unsigned long __cdecl base::win::EtwTraceProvider::Register(void)"); }
++extern "C" void phone81_sym_201() __asm__("?Unregister@EtwTraceProvider@win@base@@QAAKXZ");
++extern "C" void phone81_sym_201() { phone81::DesktopTrap("public: unsigned long __cdecl base::win::EtwTraceProvider::Unregister(void)"); }
++extern "C" void phone81_sym_202() __asm__("??1EtwTraceProvider@win@base@@UAA@XZ");
++extern "C" void phone81_sym_202() { phone81::DesktopTrap("public: virtual __cdecl base::win::EtwTraceProvider::~EtwTraceProvider(void)"); }
++extern "C" void phone81_sym_203() __asm__("??1WindowImpl@gfx@@UAA@XZ");
++extern "C" void phone81_sym_203() { phone81::DesktopTrap("public: virtual __cdecl gfx::WindowImpl::~WindowImpl(void)"); }
++extern "C" void phone81_sym_204() __asm__("??1SkiaGraphiteDawnImageRepresentation@gpu@@UAA@XZ");
++extern "C" void phone81_sym_204() { phone81::DesktopTrap("public: virtual __cdecl gpu::SkiaGraphiteDawnImageRepresentation::~SkiaGraphiteDawnImageRepresentation(void)"); }
++extern "C" void phone81_sym_205() __asm__("??1OutputWriter@json@trace_processor@perfetto@@UAA@XZ");
++extern "C" void phone81_sym_205() { phone81::DesktopTrap("public: virtual __cdecl perfetto::trace_processor::json::OutputWriter::~OutputWriter(void)"); }
++extern "C" void phone81_sym_206() __asm__("?GetDefaultWindowIcon@WindowImpl@gfx@@UBAPAUHICON__@@XZ");
++extern "C" void phone81_sym_206() { phone81::DesktopTrap("public: virtual struct HICON__* __cdecl gfx::WindowImpl::GetDefaultWindowIcon(void) const"); }
++extern "C" void phone81_sym_207() __asm__("?GetSmallWindowIcon@WindowImpl@gfx@@UBAPAUHICON__@@XZ");
++extern "C" void phone81_sym_207() { phone81::DesktopTrap("public: virtual struct HICON__* __cdecl gfx::WindowImpl::GetSmallWindowIcon(void) const"); }
++extern "C" void phone81_sym_208() __asm__("?GetSharedHandle@D3DSharedFence@gfx@@QBAPAXXZ");
++extern "C" void phone81_sym_208() { phone81::DesktopTrap("public: void * __cdecl gfx::D3DSharedFence::GetSharedHandle(void) const"); }
++extern "C" void phone81_sym_209() __asm__("??ERegistryKeyIterator@win@base@@QAAXXZ");
++extern "C" void phone81_sym_209() { phone81::DesktopTrap("public: void __cdecl base::win::RegistryKeyIterator::operator++(void)"); }
++extern "C" void phone81_sym_210() __asm__("??ERegistryValueIterator@win@base@@QAAXXZ");
++extern "C" void phone81_sym_210() { phone81::DesktopTrap("public: void __cdecl base::win::RegistryValueIterator::operator++(void)"); }
++extern "C" void phone81_sym_211() __asm__("?Update@D3DSharedFence@gfx@@QAAX_K@Z");
++extern "C" void phone81_sym_211() { phone81::DesktopTrap("public: void __cdecl gfx::D3DSharedFence::Update(unsigned __int64)"); }
++extern "C" void phone81_sym_212() __asm__("?Init@WindowImpl@gfx@@QAAXPAUHWND__@@ABVRect@2@@Z");
++extern "C" void phone81_sym_212() { phone81::DesktopTrap("public: void __cdecl gfx::WindowImpl::Init(struct HWND__*, class gfx::Rect const &)"); }
++extern "C" void phone81_sym_213() __asm__("?DestroyWGPUTextureIfNotCached@DawnSharedTextureCache@gpu@@QAAXABVDevice@wgpu@@ABVTexture@4@@Z");
++extern "C" void phone81_sym_213() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::DestroyWGPUTextureIfNotCached(class wgpu::Device const &, class wgpu::Texture const &)"); }
++extern "C" void phone81_sym_214() __asm__("?EraseDataIfDeviceLost@DawnSharedTextureCache@gpu@@QAAXXZ");
++extern "C" void phone81_sym_214() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::EraseDataIfDeviceLost(void)"); }
++extern "C" void phone81_sym_215() __asm__("?EraseDawnSharedTextureCache@DawnSharedTextureCache@gpu@@QAAXABVDevice@wgpu@@@Z");
++extern "C" void phone81_sym_215() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::EraseDawnSharedTextureCache(class wgpu::Device const &)"); }
++extern "C" void phone81_sym_216() __asm__("?MaybeCacheSharedTextureMemory@DawnSharedTextureCache@gpu@@QAAXABVDevice@wgpu@@ABVSharedTextureMemory@4@@Z");
++extern "C" void phone81_sym_216() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::MaybeCacheSharedTextureMemory(class wgpu::Device const &, class wgpu::SharedTextureMemory const &)"); }
++extern "C" void phone81_sym_217() __asm__("?MaybeCacheWGPUTexture@DawnSharedTextureCache@gpu@@QAAXABVDevice@wgpu@@ABVTexture@4@W4TextureUsage@4@2ABV?$vector@W4TextureFormat@wgpu@@V?$allocator@W4TextureFormat@wgpu@@@__Cr@std@@@__Cr@std@@@Z");
++extern "C" void phone81_sym_217() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::MaybeCacheWGPUTexture(class wgpu::Device const &, class wgpu::Texture const &, enum wgpu::TextureUsage, enum wgpu::TextureUsage, class std::__Cr::vector<enum wgpu::TextureFormat, class std::__Cr::allocator<enum wgpu::TextureFormat>> const &)"); }
++extern "C" void phone81_sym_218() __asm__("?RemoveWGPUTextureFromCache@DawnSharedTextureCache@gpu@@QAAXABVDevice@wgpu@@ABVTexture@4@@Z");
++extern "C" void phone81_sym_218() { phone81::DesktopTrap("public: void __cdecl gpu::DawnSharedTextureCache::RemoveWGPUTextureFromCache(class wgpu::Device const &, class wgpu::Texture const &)"); }
++extern "C" void phone81_sym_219() __asm__("?AdviseDontNeedAfter@PagedMemory@base@perfetto@@QAAXI@Z");
++extern "C" void phone81_sym_219() { phone81::DesktopTrap("public: void __cdecl perfetto::base::PagedMemory::AdviseDontNeedAfter(unsigned int)"); }
++extern "C" void phone81_sym_220() __asm__("?EnsureCommitted@PagedMemory@base@perfetto@@QAAXI@Z");
++extern "C" void phone81_sym_220() { phone81::DesktopTrap("public: void __cdecl perfetto::base::PagedMemory::EnsureCommitted(unsigned int)"); }
++extern "C" void phone81_sym_221() __asm__("?Clear@ProgressReporter@base@perfetto@@QAAXXZ");
++extern "C" void phone81_sym_221() { phone81::DesktopTrap("public: void __cdecl perfetto::base::ProgressReporter::Clear(void)"); }
++extern "C" void phone81_sym_222() __asm__("?SetFilterETWSessionByURL2Callback@Isolate@v8@@QAAXP6A?AUFilterETWSessionByURLResult@2@V?$Local@VContext@v8@@@2@ABV?$basic_string@DU?$char_traits@D@__Cr@std@@V?$allocator@D@23@@__Cr@std@@@Z@Z");
++extern "C" void phone81_sym_222() { phone81::DesktopTrap("public: void __cdecl v8::Isolate::SetFilterETWSessionByURL2Callback(struct v8::FilterETWSessionByURLResult (__cdecl *)(class v8::Local<class v8::Context>, class std::__Cr::basic_string<char, struct std::__Cr::char_traits<char>, class std::__Cr::allocator<char>> const &))"); }
++extern "C" void phone81_sym_223() __asm__("?Abort@WasmModuleCompilation@v8@@QAAXXZ");
++extern "C" void phone81_sym_223() { phone81::DesktopTrap("public: void __cdecl v8::WasmModuleCompilation::Abort(void)"); }
++extern "C" void phone81_sym_224() __asm__("?Finish@WasmModuleCompilation@v8@@QAAXPAVIsolate@2@ABV?$function@$$A6AXAAVModuleCachingInterface@WasmStreaming@v8@@@Z@__Cr@std@@ABV?$function@$$A6AXV?$variant@V?$Local@VWasmModuleObject@v8@@@v8@@V?$Local@VValue@v8@@@2@@__Cr@std@@@Z@56@@Z");
++extern "C" void phone81_sym_224() { phone81::DesktopTrap("public: void __cdecl v8::WasmModuleCompilation::Finish(class v8::Isolate *, class std::__Cr::function<void __cdecl(class v8::WasmStreaming::ModuleCachingInterface &)> const &, class std::__Cr::function<void __cdecl(class std::__Cr::variant<class v8::Local<class v8::WasmModuleObject>, class v8::Local<class v8::Value>>)> const &)"); }
++extern "C" void phone81_sym_225() __asm__("?OnBytesReceived@WasmModuleCompilation@v8@@QAAXPBEI@Z");
++extern "C" void phone81_sym_225() { phone81::DesktopTrap("public: void __cdecl v8::WasmModuleCompilation::OnBytesReceived(unsigned char const *, unsigned int)"); }
++extern "C" void phone81_sym_226() __asm__("?GetUser32FunctionPointer@win@base@@YAPAXPBDPAUNativeLibraryLoadError@2@@Z");
++extern "C" void phone81_sym_226() { phone81::DesktopTrap("void * __cdecl base::win::GetUser32FunctionPointer(char const *, struct base::NativeLibraryLoadError *)"); }
++extern "C" void phone81_sym_227() __asm__("?TerminateWithControlFlowViolation@win@debug@base@@YAXXZ");
++extern "C" void phone81_sym_227() { phone81::DesktopTrap("void __cdecl base::debug::win::TerminateWithControlFlowViolation(void)"); }
++extern "C" void phone81_sym_228() __asm__("?TerminateWithHeapCorruption@win@debug@base@@YAXXZ");
++extern "C" void phone81_sym_228() { phone81::DesktopTrap("void __cdecl base::debug::win::TerminateWithHeapCorruption(void)"); }
++extern "C" void phone81_sym_229() __asm__("?DisableFlicks@win@base@@YAXPAUHWND__@@@Z");
++extern "C" void phone81_sym_229() { phone81::DesktopTrap("void __cdecl base::win::DisableFlicks(struct HWND__*)"); }
++extern "C" void phone81_sym_230() __asm__("?EnableFlicks@win@base@@YAXPAUHWND__@@@Z");
++extern "C" void phone81_sym_230() { phone81::DesktopTrap("void __cdecl base::win::EnableFlicks(struct HWND__*)"); }
++extern "C" void phone81_sym_231() __asm__("?EnableHighDPISupport@win@base@@YAXXZ");
++extern "C" void phone81_sym_231() { phone81::DesktopTrap("void __cdecl base::win::EnableHighDPISupport(void)"); }
++extern "C" void phone81_sym_232() __asm__("?InitializeWindowClass@win@base@@YAXPB_WP6AJPAUHWND__@@IIJ@ZIHHPAUHICON__@@PAUHBRUSH__@@033PAUtagWNDCLASSEXW@@@Z");
++extern "C" void phone81_sym_232() { phone81::DesktopTrap("void __cdecl base::win::InitializeWindowClass(wchar_t const *, long (__cdecl *)(struct HWND__*, unsigned int, unsigned int, long), unsigned int, int, int, struct HICON__*, struct HBRUSH__*, wchar_t const *, struct HICON__*, struct HICON__*, struct tagWNDCLASSEXW *)"); }
+diff --git a/build/win/phone81/process_prng.cc b/build/win/phone81/process_prng.cc
+new file mode 100644
+index 0000000..20851a1
+--- /dev/null
++++ b/build/win/phone81/process_prng.cc
+@@ -0,0 +1,35 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// bcryptprimitives!ProcessPrng exists only on Windows 10 and later. Rust's std
++// imports it directly (raw-dylib), and a missing import would stop Windows
++// Phone 8.1 from loading the application at all. Provide it from the VC120
++// CRT's rand_s(), which is backed by the system CSPRNG (RtlGenRandom), the
++// same source that //base/rand_util_win.cc uses on the phone.
++//
++// This is a real implementation, not a failing replacement: it is linked as an
++// object so that it takes precedence over the lazily loaded import.
++
++extern "C" int __cdecl rand_s(unsigned int* random_value);
++extern "C" void __cdecl abort(void);
++
++extern "C" int __stdcall Phone81ProcessPrng(unsigned char* data,
++                                            unsigned long size) {
++  while (size) {
++    unsigned int value = 0;
++    if (rand_s(&value) != 0) {
++      abort();  // ProcessPrng never fails; never return weak bytes.
++    }
++    const unsigned long count = size < sizeof(value) ? size : sizeof(value);
++    for (unsigned long i = 0; i < count; ++i) {
++      data[i] = static_cast<unsigned char>(value >> (8 * i));
++    }
++    data += count;
++    size -= count;
++  }
++  return 1;  // TRUE
++}
++
++extern "C" __attribute__((used)) void* const __imp_ProcessPrng =
++    reinterpret_cast<void*>(&Phone81ProcessPrng);
 diff --git a/build/win/phone81/vc120_crt.h b/build/win/phone81/vc120_crt.h
 new file mode 100644
 index 0000000..bf508d5
@@ -7285,6 +9049,27 @@ index 0f38b2f..8f4fd96 100644
  dawn_jinja2_dir = "//third_party/jinja2"
  dawn_jsoncpp_dir = "//third_party/jsoncpp"
  dawn_perfetto_dir = "//third_party/perfetto"
+diff --git a/build_overrides/partition_alloc.gni b/build_overrides/partition_alloc.gni
+index f08e917..123201e 100644
+--- a/build_overrides/partition_alloc.gni
++++ b/build_overrides/partition_alloc.gni
+@@ -64,6 +64,16 @@ if (!is_debug || partition_alloc_optimized_debug) {
+   partition_alloc_add_configs = [ "//build/config/compiler:no_optimize" ]
+ }
+ 
++# Windows Phone 8.1: the Phone SDK headers hide memory APIs that the phone's
++# kernel exports (VirtualAlloc, VirtualProtect, GlobalMemoryStatusEx...).
++# Compile PartitionAlloc with the Windows 10 SDK declarations; the link still
++# resolves them against WindowsPhoneCore.lib.
++import("//build/config/win/phone81.gni")
++if (is_win && phone81_port) {
++  partition_alloc_add_configs +=
++      [ "//build/config/win:phone81_desktop_declarations" ]
++}
++
+ # allocator_shim defines the __alloc_token_* functions, some of which forward to
+ # the standard allocation functions (e.g. posix_memalign() on Apple). Don't
+ # instrument it, so that they don't end up calling themselves.
 diff --git a/buildtools/third_party/libc++/BUILD.gn b/buildtools/third_party/libc++/BUILD.gn
 index e459bcb..7a2b077 100644
 --- a/buildtools/third_party/libc++/BUILD.gn
@@ -7437,6 +9222,28 @@ index a11b566..3bee3ae 100644
    _configs = configs
    configs = []
    configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
+diff --git a/components/breadcrumbs/core/BUILD.gn b/components/breadcrumbs/core/BUILD.gn
+index d0d1905..3bfe6a7 100644
+--- a/components/breadcrumbs/core/BUILD.gn
++++ b/components/breadcrumbs/core/BUILD.gn
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/ui.gni")
+ 
+ source_set("core") {
+@@ -38,7 +39,8 @@ source_set("core") {
+     "//ui/base",
+   ]
+ 
+-  if (toolkit_views) {
++  # The Windows Phone 8.1 shell has no Views widgets to observe.
++  if (toolkit_views && !phone81_port) {
+     deps += [ "//ui/views" ]
+   }
+ }
 diff --git a/components/crash/core/common/BUILD.gn b/components/crash/core/common/BUILD.gn
 index d3fdd11..d593df4 100644
 --- a/components/crash/core/common/BUILD.gn
@@ -7935,6 +9742,25 @@ index c15bbfb..de87ccf 100644
    HWND child_hwnd;
    auto device = CreateSoftwareOutputDeviceWin(
        surface_handle, &output_device_backing_, display_client, child_hwnd);
+diff --git a/components/viz/service/display_embedder/skia_output_device_dcomp.cc b/components/viz/service/display_embedder/skia_output_device_dcomp.cc
+index d20a774..61689a5 100644
+--- a/components/viz/service/display_embedder/skia_output_device_dcomp.cc
++++ b/components/viz/service/display_embedder/skia_output_device_dcomp.cc
+@@ -60,10 +60,14 @@ OutputSurface::DCSupportLevel GetDcSupportLevel() {
+     Microsoft::WRL::ComPtr<IDCompositionDevice3> dcomp_device =
+         gl::GetDirectCompositionDevice();
+ 
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
++    // IDCompositionDevice5 postdates the Windows SDK used by the Phone 8.1
++    // port, which has no DirectComposition anyway.
+     if (Microsoft::WRL::ComPtr<IDCompositionDevice5> dcomp_device5;
+         SUCCEEDED(dcomp_device.As(&dcomp_device5))) {
+       return OutputSurface::DCSupportLevel::kDCompDynamicTexture;
+     }
++#endif
+ 
+     return OutputSurface::DCSupportLevel::kDCompTexture;
+   }
 diff --git a/components/zucchini/BUILD.gn b/components/zucchini/BUILD.gn
 index 0b98a83..944def5 100644
 --- a/components/zucchini/BUILD.gn
@@ -7998,7 +9824,7 @@ index 822b769..bc888c5 100644
    # line shouldn't be here; try removing it.
    check_includes = false
 diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
-index 0666c02..f61b05f 100644
+index 0666c02..a642286 100644
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
 @@ -9,6 +9,7 @@ import("//build/config/features.gni")
@@ -8017,7 +9843,17 @@ index 0666c02..f61b05f 100644
    # Only the public target should depend on this. All other targets (even
    # internal content ones) should depend on the public one.
    visibility = [
-@@ -3501,10 +3503,10 @@ source_set("browser") {
+@@ -3002,9 +3004,6 @@ source_set("browser") {
+       "file_system_access/file_path_watcher/file_path_watcher_win.cc",
+       "font_access/font_enumeration_data_source_win.cc",
+       "font_access/font_enumeration_data_source_win.h",
+-      "haptics/haptics_manager_impl_win.cc",
+-      "haptics/haptics_manager_impl_win.h",
+-      "haptics/haptics_waveforms_statics3_win.h",
+       "installedapp/fetch_related_win_apps_task.cc",
+       "installedapp/fetch_related_win_apps_task.h",
+       "installedapp/native_win_app_fetcher.h",
+@@ -3501,10 +3500,18 @@ source_set("browser") {
    }
  
    if (is_win) {
@@ -8028,12 +9864,38 @@ index 0666c02..f61b05f 100644
 +    deps += [ "//ui/base/ime/win" ]
 +    if (!phone81_port) {
 +      deps += [ "//components/tracing:tracing_etw" ]
++
++      # Windows.Devices.Haptics input haptics do not exist on Windows Phone
++      # 8.1, which keeps the generic (no haptics manager) path.
++      sources += [
++        "haptics/haptics_manager_impl_win.cc",
++        "haptics/haptics_manager_impl_win.h",
++        "haptics/haptics_waveforms_statics3_win.h",
++      ]
 +    }
    }
  
    if (use_aura) {
+diff --git a/content/browser/accessibility/browser_accessibility_state_impl_win.cc b/content/browser/accessibility/browser_accessibility_state_impl_win.cc
+index 0e8fb79..c76e4c7 100644
+--- a/content/browser/accessibility/browser_accessibility_state_impl_win.cc
++++ b/content/browser/accessibility/browser_accessibility_state_impl_win.cc
+@@ -493,7 +493,13 @@ class BrowserAccessibilityStateImplWin : public BrowserAccessibilityStateImpl {
+ };
+ 
+ BrowserAccessibilityStateImplWin::BrowserAccessibilityStateImplWin() {
++#if defined(WINUWP_8_1)
++  // Windows Phone 8.1: no desktop message-only window (SingletonHwnd) and no
++  // UI Automation clients to watch for.
++  if ((false)) {
++#else
+   if (base::SingleThreadTaskRunner::HasCurrentDefault()) {
++#endif
+     hwnd_subscription_ = gfx::SingletonHwnd::GetInstance()->RegisterCallback(
+         base::BindRepeating(&OnWndProc));
+   }
 diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
-index 654641b..88253b0 100644
+index 654641b..805f6bc 100644
 --- a/content/browser/browser_main_loop.cc
 +++ b/content/browser/browser_main_loop.cc
 @@ -215,7 +215,11 @@
@@ -8048,7 +9910,18 @@ index 654641b..88253b0 100644
  #include <shellapi.h>
  
  #include "content/public/browser/child_process_launcher_utils.h"
-@@ -1646,7 +1650,9 @@ bool BrowserMainLoop::InitializeToolkit() {
+@@ -1532,7 +1536,9 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
+ #endif
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++// Windows Phone 8.1 has no top-level desktop windows (SingletonHwnd) to
++// receive device-change broadcasts.
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+   if (!base::FeatureList::IsEnabled(
+           video_capture::features::kWinCameraMonitoringInVideoCaptureService)) {
+     system_message_window_ = std::make_unique<media::SystemMessageWindowWin>();
+@@ -1646,7 +1652,9 @@ bool BrowserMainLoop::InitializeToolkit() {
    // (Need to add InitializeToolkit stage to BrowserParts).
    // See also GTK setup in EarlyInitialization, above, and associated comments.
  
@@ -8179,6 +10052,31 @@ index 3f109c6..b388c1c 100644
    }
  };
  
+diff --git a/content/browser/haptics/haptics_service_impl.cc b/content/browser/haptics/haptics_service_impl.cc
+index 3fa8d64..abf6cb9 100644
+--- a/content/browser/haptics/haptics_service_impl.cc
++++ b/content/browser/haptics/haptics_service_impl.cc
+@@ -17,8 +17,11 @@
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
+ 
+ #if BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
++#if !BASE_WIN_IS_PHONE_8_1
+ #include "content/browser/haptics/haptics_manager_impl_win.h"
+ #endif
++#endif
+ 
+ namespace content {
+ 
+@@ -33,7 +36,7 @@ std::unique_ptr<HapticsManager> CreateHapticsManager() {
+   if (GetTestFactory()) {
+     return GetTestFactory().Run();
+   }
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   return std::make_unique<HapticsManagerImplWin>();
+ #else
+   return nullptr;
 diff --git a/content/browser/renderer_host/input/fling_scheduler.cc b/content/browser/renderer_host/input/fling_scheduler.cc
 index 2ce358d..d6aefc8 100644
 --- a/content/browser/renderer_host/input/fling_scheduler.cc
@@ -8203,6 +10101,51 @@ index 2ce358d..d6aefc8 100644
    return display::win::GetScreenWin()->GetPixelsPerInch(position_in_screen);
  #else
    return gfx::Vector2dF(input::kDefaultPixelsPerInch,
+diff --git a/content/browser/screenlock_monitor/screenlock_monitor_device_source_win.cc b/content/browser/screenlock_monitor/screenlock_monitor_device_source_win.cc
+index fe5d22b..1facea0 100644
+--- a/content/browser/screenlock_monitor/screenlock_monitor_device_source_win.cc
++++ b/content/browser/screenlock_monitor/screenlock_monitor_device_source_win.cc
+@@ -59,11 +59,16 @@ void ScreenlockMonitorDeviceSource::SessionMessageWindow::
+ }
+ 
+ ScreenlockMonitorDeviceSource::SessionMessageWindow::SessionMessageWindow() {
++#if defined(WINUWP_8_1)
++  // Windows Phone 8.1: no desktop session notifications nor SingletonHwnd. An
++  // application is suspended, not notified, when the phone locks.
++#else
+   // Use NOTIFY_FOR_THIS_SESSION so we only receive events from the current
+   // session, and not from other users connected to the same session host.
+   bool registered = register_session_notification_function_(
+       gfx::SingletonHwnd::GetInstance()->hwnd(), NOTIFY_FOR_THIS_SESSION);
+   CHECK(registered, base::NotFatalUntil::M160);
++#endif
+ }
+ 
+ ScreenlockMonitorDeviceSource::SessionMessageWindow::~SessionMessageWindow() {}
+diff --git a/content/browser/web_contents/slow_web_preference_cache.cc b/content/browser/web_contents/slow_web_preference_cache.cc
+index 1ff74b9..20781c8 100644
+--- a/content/browser/web_contents/slow_web_preference_cache.cc
++++ b/content/browser/web_contents/slow_web_preference_cache.cc
+@@ -53,7 +53,8 @@ enum class PrimaryPointerType {
+ SlowWebPreferenceCacheObserver::~SlowWebPreferenceCacheObserver() = default;
+ 
+ SlowWebPreferenceCache::SlowWebPreferenceCache() {
+-#if BUILDFLAG(IS_WIN)
++// Windows Phone 8.1: no registry-backed input device notifications.
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+   ui::InputDeviceObserverWin::GetInstance()->AddObserver(this);
+ #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   ui::DeviceDataManager::GetInstance()->AddObserver(this);
+@@ -65,7 +66,8 @@ SlowWebPreferenceCache::SlowWebPreferenceCache() {
+ }
+ 
+ SlowWebPreferenceCache::~SlowWebPreferenceCache() {
+-#if BUILDFLAG(IS_WIN)
++// Windows Phone 8.1: no registry-backed input device notifications.
++#if BUILDFLAG(IS_WIN) && !defined(WINUWP_8_1)
+   ui::InputDeviceObserverWin::GetInstance()->RemoveObserver(this);
+ #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   ui::DeviceDataManager::GetInstance()->RemoveObserver(this);
 diff --git a/content/browser/webauth/authenticator_common_impl.cc b/content/browser/webauth/authenticator_common_impl.cc
 index 0e7f6d3..e0a7fd7 100644
 --- a/content/browser/webauth/authenticator_common_impl.cc
@@ -8373,6 +10316,116 @@ index 3bd2725..4973171 100644
    # Targets external to content should always link to the public API.
    # Internal targets can link to this but only if they're child processes
    # (i.e. not content/browser or content/common) and only if they're inside the
+diff --git a/content/child/dwrite_font_proxy/dwrite_font_proxy_init_impl_win.cc b/content/child/dwrite_font_proxy/dwrite_font_proxy_init_impl_win.cc
+index b34128c..81e66ec 100644
+--- a/content/child/dwrite_font_proxy/dwrite_font_proxy_init_impl_win.cc
++++ b/content/child/dwrite_font_proxy/dwrite_font_proxy_init_impl_win.cc
+@@ -13,6 +13,7 @@
+ #include "base/functional/callback.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/win/iat_patch_function.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "base/win/windows_version.h"
+ #include "content/child/dwrite_font_proxy/dwrite_font_proxy_win.h"
+ #include "content/child/dwrite_font_proxy/font_fallback_win.h"
+@@ -23,6 +24,16 @@
+ #include "third_party/skia/include/core/SkFontMgr.h"
+ #include "third_party/skia/include/ports/SkTypeface_win.h"
+ 
++#if BASE_WIN_IS_PHONE_8_1
++#include "ui/gfx/win/phone_font_manager.h"
++#endif
++
++#if BASE_WIN_IS_PHONE_8_1
++// The desktop font-service and GDI patching helpers are unused on Phone.
++#pragma clang diagnostic ignored "-Wunused-function"
++#pragma clang diagnostic ignored "-Wunused-variable"
++#endif
++
+ namespace mswr = Microsoft::WRL;
+ 
+ namespace content {
+@@ -53,6 +64,18 @@ void CreateDirectWriteFactory(IDWriteFactory** factory) {
+ void InitializeDWriteFontProxy() {
+   TRACE_EVENT0("dwrite,fonts", "InitializeDWriteFontProxy");
+   mswr::ComPtr<IDWriteFactory> factory;
++#if BASE_WIN_IS_PHONE_8_1
++  // Windows Phone 8.1 runs single-process with the installed fonts: use the
++  // same DirectWrite 1 + Fontations manager as ui/gfx, without the browser
++  // font proxy, IAT patches or Skia's DirectWrite 3 font manager.
++  CHECK(SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
++                                      __uuidof(IDWriteFactory),
++                                      reinterpret_cast<IUnknown**>(
++                                          factory.GetAddressOf()))));
++  skia::OverrideDefaultSkFontMgr(
++      gfx::win::CreatePhoneFontManager(factory.Get()));
++  return;
++#else
+ 
+   CreateDirectWriteFactory(&factory);
+ 
+@@ -79,6 +102,7 @@ void InitializeDWriteFontProxy() {
+   skia::OverrideDefaultSkFontMgr(std::move(skia_font_manager));
+ 
+   DCHECK(g_font_fallback);
++#endif  // BASE_WIN_IS_PHONE_8_1
+ }
+ 
+ void UninitializeDWriteFontProxy() {
+diff --git a/content/child/font_warmup_win.cc b/content/child/font_warmup_win.cc
+index 5b17346..d7e639b 100644
+--- a/content/child/font_warmup_win.cc
++++ b/content/child/font_warmup_win.cc
+@@ -26,11 +26,18 @@
+ #include "base/synchronization/lock.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/win/iat_patch_function.h"
++#include "base/win/windows_phone_8_1.h"
+ #include "build/build_config.h"
+ #include "third_party/skia/include/core/SkFontMgr.h"
+ #include "third_party/skia/include/core/SkRefCnt.h"
+ #include "third_party/skia/include/ports/SkTypeface_win.h"
+ 
++#if BASE_WIN_IS_PHONE_8_1
++// The desktop font-service and GDI patching helpers are unused on Phone.
++#pragma clang diagnostic ignored "-Wunused-function"
++#pragma clang diagnostic ignored "-Wunused-variable"
++#endif
++
+ namespace content {
+ 
+ namespace {
+@@ -386,6 +393,10 @@ GdiFontPatchDataImpl::GdiFontPatchDataImpl(const base::FilePath& path) {
+ // The patching fails occasionally for unknown reasons, but the rate seems to
+ // be low enough to not cause serious problems.
+ void PatchServiceManagerCalls() {
++#if BASE_WIN_IS_PHONE_8_1
++  // No IAT patching and no font service on Windows Phone 8.1.
++  return;
++#else
+   static bool is_patched = false;
+   if (is_patched)
+     return;
+@@ -416,13 +427,19 @@ void PatchServiceManagerCalls() {
+   static base::NoDestructor<base::win::IATPatchFunction> patch_nt_connect_port;
+   patch_nt_connect_port->Patch(L"dwrite.dll", "ntdll.dll", "NtAlpcConnectPort",
+                                reinterpret_cast<void*>(NtALpcConnectPortPatch));
++#endif  // BASE_WIN_IS_PHONE_8_1
+ }
+ 
+ GdiFontPatchData* PatchGdiFontEnumeration(const base::FilePath& path) {
++#if BASE_WIN_IS_PHONE_8_1
++  // No GDI font enumeration to patch on Windows Phone 8.1.
++  return nullptr;
++#else
+   if (!g_warmup_fontmgr)
+     g_warmup_fontmgr = SkFontMgr_New_DirectWrite().release();
+   DCHECK(g_warmup_fontmgr);
+   return new GdiFontPatchDataImpl(path);
++#endif  // BASE_WIN_IS_PHONE_8_1
+ }
+ 
+ size_t GetEmulatedGdiHandleCountForTesting() {
 diff --git a/content/common/BUILD.gn b/content/common/BUILD.gn
 index 3339832..3dddd0a 100644
 --- a/content/common/BUILD.gn
@@ -8385,6 +10438,18 @@ index 3339832..3dddd0a 100644
    # Targets external to content should always link to the public API.
    # In addition, targets outside of the content component (shell and tests)
    # must not link to this because it will duplicate the code in the component
+diff --git a/content/gpu/BUILD.gn b/content/gpu/BUILD.gn
+index 15aed10..bd5867f 100644
+--- a/content/gpu/BUILD.gn
++++ b/content/gpu/BUILD.gn
+@@ -25,6 +25,7 @@ if (is_component_build) {
+ }
+ 
+ target(link_target_type, "gpu_sources") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   # This is an internal content API. Code outside of the content "component"
+   # (like content/test and content/shell) should depend on ":gpu" above.
+   visibility = [ "//content/*" ]
 diff --git a/content/public/browser/BUILD.gn b/content/public/browser/BUILD.gn
 index 0851075..279c75d 100644
 --- a/content/public/browser/BUILD.gn
@@ -8410,7 +10475,7 @@ index cf78814..9f82e97 100644
    # internal content ones) should depend on the public one.
    visibility = [
 diff --git a/content/shell/BUILD.gn b/content/shell/BUILD.gn
-index 1afecb8..15511e7 100644
+index 1afecb8..a549516 100644
 --- a/content/shell/BUILD.gn
 +++ b/content/shell/BUILD.gn
 @@ -8,6 +8,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -8528,7 +10593,7 @@ index 1afecb8..15511e7 100644
      }
  
      defines = []
-@@ -767,11 +795,14 @@ if (is_android) {
+@@ -767,11 +795,17 @@ if (is_android) {
        ":content_shell_app",
        ":content_shell_lib",
        ":pak",
@@ -8539,12 +10604,15 @@ index 1afecb8..15511e7 100644
  
 +    if (current_os != "winuwp") {
 +      deps += [ "//build/win:default_exe_manifest" ]
++    } else if (shell_phone81) {
++      # Failing replacements for desktop Win32 imports absent from the phone.
++      deps += [ "//build/win/phone81:desktop_stubs" ]
 +    }
 +
      data_deps = [
        ":pak",
        "//tools/v8_context_snapshot",
-@@ -782,7 +813,19 @@ if (is_android) {
+@@ -782,7 +816,19 @@ if (is_android) {
          "//base",
          "//sandbox",
        ]
@@ -8565,7 +10633,7 @@ index 1afecb8..15511e7 100644
          defines += [ "WIN_CONSOLE_APP" ]
        } else {
          # Set /SUBSYSTEM:WINDOWS unless a console build has been requested.
-@@ -791,14 +834,12 @@ if (is_android) {
+@@ -791,14 +837,12 @@ if (is_android) {
        }
  
        # Limit pre-loaded modules to improve sandbox coverage in content_shell.
@@ -8648,10 +10716,10 @@ index b4c91f7..828da70 100644
      std::string process_type =
 diff --git a/content/shell/app/shell_main_winuwp.cc b/content/shell/app/shell_main_winuwp.cc
 new file mode 100644
-index 0000000..810fa3c
+index 0000000..debf19f
 --- /dev/null
 +++ b/content/shell/app/shell_main_winuwp.cc
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,239 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -8662,6 +10730,7 @@ index 0000000..810fa3c
 +#include "base/win/windows_types.h"
 +
 +#include <windows.applicationmodel.core.h>
++#include <windows.storage.h>
 +#include <windows.ui.core.h>
 +#include <wrl/client.h>
 +#include <wrl/event.h>
@@ -8669,6 +10738,8 @@ index 0000000..810fa3c
 +#include <wrl/wrappers/corewrappers.h>
 +
 +#include <atomic>
++#include <string.h>
++#include <string>
 +#include <utility>
 +
 +#include "base/command_line.h"
@@ -8678,6 +10749,14 @@ index 0000000..810fa3c
 +#include "content/shell/browser/shell.h"
 +#include "sandbox/win/src/sandbox_types.h"
 +
++#if defined(WINUWP_8_1)
++extern "C" {
++// build/win/phone81/desktop_stubs_report.cc: called once per unsupported
++// desktop API (or desktop-only code path) that the application reaches.
++extern void (*phone81_desktop_stub_hook)(const char* name);
++}
++#endif
++
 +namespace {
 +namespace app = ABI::Windows::ApplicationModel::Core;
 +namespace core = ABI::Windows::UI::Core;
@@ -8686,6 +10765,51 @@ index 0000000..810fa3c
 +using Microsoft::WRL::Make;
 +using Microsoft::WRL::RuntimeClass;
 +using Microsoft::WRL::Wrappers::HStringReference;
++
++// The application's LocalFolder (for example
++// C:\Data\Users\DefApps\AppData\{package}\Local on the phone). Diagnostic logs
++// are written there, where the package can write and a developer can read them
++// back with the Windows Phone isolated storage tools.
++std::wstring GetLocalFolderPath() {
++  namespace storage = ABI::Windows::Storage;
++  ComPtr<storage::IApplicationDataStatics> statics;
++  if (FAILED(::RoGetActivationFactory(
++          HStringReference(RuntimeClass_Windows_Storage_ApplicationData).Get(),
++          IID_PPV_ARGS(&statics)))) {
++    return {};
++  }
++  ComPtr<storage::IApplicationData> data;
++  ComPtr<storage::IStorageFolder> folder;
++  ComPtr<storage::IStorageItem> item;
++  Microsoft::WRL::Wrappers::HString path;
++  if (FAILED(statics->get_Current(&data)) ||
++      FAILED(data->get_LocalFolder(&folder)) || FAILED(folder.As(&item)) ||
++      FAILED(item->get_Path(path.GetAddressOf()))) {
++    return {};
++  }
++  unsigned int length = 0;
++  const wchar_t* raw = ::WindowsGetStringRawBuffer(path.Get(), &length);
++  return raw ? std::wstring(raw, length) : std::wstring();
++}
++
++#if defined(WINUWP_8_1)
++wchar_t g_stub_log_path[MAX_PATH];
++
++void AppendStubLog(const char* name) {
++  if (!g_stub_log_path[0]) {
++    return;
++  }
++  HANDLE file = ::CreateFile2(g_stub_log_path, FILE_APPEND_DATA,
++                              FILE_SHARE_READ, OPEN_ALWAYS, nullptr);
++  if (file == INVALID_HANDLE_VALUE) {
++    return;
++  }
++  DWORD written = 0;
++  ::WriteFile(file, name, static_cast<DWORD>(strlen(name)), &written, nullptr);
++  ::WriteFile(file, "\n", 1, &written, nullptr);
++  ::CloseHandle(file);
++}
++#endif
 +
 +class ShellView final : public RuntimeClass<app::IFrameworkView> {
 + public:
@@ -8743,6 +10867,14 @@ index 0000000..810fa3c
 +      return E_INVALIDARG;
 +    }
 +    command_line->AppendSwitch(switches::kSingleProcess);
++    // There is no console or debugger on a retail phone: log to a file in the
++    // application's LocalFolder.
++    const std::wstring local_folder = GetLocalFolderPath();
++    if (!local_folder.empty()) {
++      command_line->AppendSwitch("enable-logging");
++      command_line->AppendSwitchNative("log-file",
++                                       local_folder + L"\\content_shell.log");
++    }
 +    command_line->AppendSwitch("disable-gpu");
 +    // Use the CPU compositor directly instead of probing WARP/SwiftShader.
 +    // The shell presenter keeps its own D3D11 device for the CoreWindow.
@@ -8816,6 +10948,14 @@ index 0000000..810fa3c
 +  if (FAILED(hr)) {
 +    return hr;
 +  }
++#if defined(WINUWP_8_1)
++  const std::wstring local_folder = GetLocalFolderPath();
++  if (!local_folder.empty() &&
++      local_folder.size() + 32 < std::size(g_stub_log_path)) {
++    wcscpy_s(g_stub_log_path, (local_folder + L"\\phone81-stubs.log").c_str());
++    phone81_desktop_stub_hook = &AppendStubLog;
++  }
++#endif
 +  auto source = Make<ShellViewSource>(instance);
 +  return source ? application->Run(source.Get()) : E_OUTOFMEMORY;
 +}
@@ -9791,6 +11931,18 @@ index 045d7fc..d3cd78c 100644
    testonly = true
  
    # See comment at the top of //content/BUILD.gn for why this is disabled in
+diff --git a/content/utility/BUILD.gn b/content/utility/BUILD.gn
+index b1d418e..c2c0b44 100644
+--- a/content/utility/BUILD.gn
++++ b/content/utility/BUILD.gn
+@@ -11,6 +11,7 @@ import("//printing/buildflags/buildflags.gni")
+ import("//services/screen_ai/buildflags/features.gni")
+ 
+ source_set("utility") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   visibility = [
+     ":for_content_tests",
+     "//content/app:*",
 diff --git a/content/utility/on_device_model/BUILD.gn b/content/utility/on_device_model/BUILD.gn
 index 7176313..901087a 100644
 --- a/content/utility/on_device_model/BUILD.gn
@@ -10598,6 +12750,23 @@ index 914181b..84952c2 100644
    # External code should depend on this via //gpu/command_buffer/service:gles2
    # above rather than depending on this directly or the component build will
    # break.
+diff --git a/gpu/command_buffer/service/shared_image/d3d_image_backing.cc b/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+index cce7b80..e8e9d9d 100644
+--- a/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
++++ b/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+@@ -2417,7 +2417,12 @@ ID3D12CommandQueue* D3DImageBacking::GetOrCreateCommandQueueFor11On12() {
+   CHECK_EQ(hr, S_OK);
+ 
+   D3D12_COMMAND_QUEUE_DESC command_queue_desc = {};
++#if defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
++  // The Windows SDK used by the Phone 8.1 port predates this enumerator.
++  command_queue_desc.Type = static_cast<D3D12_COMMAND_LIST_TYPE>(-1);
++#else
+   command_queue_desc.Type = D3D12_COMMAND_LIST_TYPE_NONE;
++#endif
+   command_queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+   command_queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+   command_queue_desc.NodeMask = 0;
 diff --git a/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc b/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
 index bd861c9..6c84e95 100644
 --- a/gpu/command_buffer/service/shared_image/d3d_image_backing_factory.cc
@@ -10855,6 +13024,91 @@ index 9065d67..13b9061 100644
    testonly = true
    sources = [
      "d3d11_mocks.cc",
+diff --git a/media/base/win/color_space_util_win.cc b/media/base/win/color_space_util_win.cc
+index a1f3d15..8d49a91 100644
+--- a/media/base/win/color_space_util_win.cc
++++ b/media/base/win/color_space_util_win.cc
+@@ -36,8 +36,11 @@ gfx::ColorSpace::PrimaryID MFPrimaryToColorSpace(uint32_t mf_primary) {
+       return gfx::ColorSpace::PrimaryID::SMPTEST428_1;
+     case MFVideoPrimaries_DCI_P3:
+       return gfx::ColorSpace::PrimaryID::SMPTEST431_2;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
++    // Not declared by the Windows SDK used by the Phone 8.1 port.
+     case MFVideoPrimaries_Display_P3:
+       return gfx::ColorSpace::PrimaryID::P3;
++#endif
+     default:
+       return gfx::ColorSpace::PrimaryID::INVALID;
+   }
+@@ -63,8 +66,10 @@ MFVideoPrimaries ColorSpaceToMFPrimary(gfx::ColorSpace::PrimaryID color_space) {
+       return MFVideoPrimaries_XYZ;
+     case gfx::ColorSpace::PrimaryID::SMPTEST431_2:
+       return MFVideoPrimaries_DCI_P3;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
+     case gfx::ColorSpace::PrimaryID::P3:
+       return MFVideoPrimaries_Display_P3;
++#endif
+     default:
+       return MFVideoPrimaries_Unknown;
+   }
+@@ -90,10 +95,12 @@ gfx::ColorSpace::TransferID MFTransferToColorSpace(uint32_t mf_transfer) {
+       return gfx::ColorSpace::TransferID::PQ;
+     case MFVideoTransFunc_HLG:
+       return gfx::ColorSpace::TransferID::HLG;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)  // Newer SDK values.
+     case MFVideoTransFunc_BT1361_ECG:
+       return gfx::ColorSpace::TransferID::BT1361_ECG;
+     case MFVideoTransFunc_SMPTE428:
+       return gfx::ColorSpace::TransferID::SMPTEST428_1;
++#endif
+     default:
+       return gfx::ColorSpace::TransferID::INVALID;
+   }
+@@ -121,10 +128,12 @@ MFVideoTransferFunction ColorSpaceToMFTransfer(
+       return MFVideoTransFunc_2084;
+     case gfx::ColorSpace::TransferID::HLG:
+       return MFVideoTransFunc_HLG;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)  // Newer SDK values.
+     case gfx::ColorSpace::TransferID::BT1361_ECG:
+       return MFVideoTransFunc_BT1361_ECG;
+     case gfx::ColorSpace::TransferID::SMPTEST428_1:
+       return MFVideoTransFunc_SMPTE428;
++#endif
+     default:
+       return MFVideoTransFunc_Unknown;
+   }
+@@ -141,6 +150,7 @@ gfx::ColorSpace::MatrixID MFMatrixToColorSpace(uint32_t mf_matrix) {
+     case MFVideoTransferMatrix_BT2020_10:
+     case MFVideoTransferMatrix_BT2020_12:
+       return gfx::ColorSpace::MatrixID::BT2020_NCL;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)  // Newer SDK values.
+     case MFVideoTransferMatrix_Identity:
+       return gfx::ColorSpace::MatrixID::GBR;
+     case MFVideoTransferMatrix_FCC47:
+@@ -149,6 +159,7 @@ gfx::ColorSpace::MatrixID MFMatrixToColorSpace(uint32_t mf_matrix) {
+       return gfx::ColorSpace::MatrixID::YCOCG;
+     case MFVideoTransferMatrix_SMPTE2085:
+       return gfx::ColorSpace::MatrixID::YDZDX;
++#endif
+     default:
+       return gfx::ColorSpace::MatrixID::INVALID;
+   }
+@@ -165,6 +176,7 @@ MFVideoTransferMatrix ColorSpaceToMFMatrix(
+       return MFVideoTransferMatrix_SMPTE240M;
+     case gfx::ColorSpace::MatrixID::BT2020_NCL:
+       return MFVideoTransferMatrix_BT2020_10;
++#if !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)  // Newer SDK values.
+     case gfx::ColorSpace::MatrixID::GBR:
+       return MFVideoTransferMatrix_Identity;
+     case gfx::ColorSpace::MatrixID::FCC:
+@@ -173,6 +185,7 @@ MFVideoTransferMatrix ColorSpaceToMFMatrix(
+       return MFVideoTransferMatrix_YCgCo;
+     case gfx::ColorSpace::MatrixID::YDZDX:
+       return MFVideoTransferMatrix_SMPTE2085;
++#endif
+     default:
+       return MFVideoTransferMatrix_Unknown;
+   }
 diff --git a/media/base/win/media_foundation_package_locator_helper.cc b/media/base/win/media_foundation_package_locator_helper.cc
 index 5e1806f..a89fbd8 100644
 --- a/media/base/win/media_foundation_package_locator_helper.cc
@@ -10880,6 +13134,27 @@ index 0800295..4c4d2c9 100644
    defines = [ "CAPTURE_IMPLEMENTATION" ]
    sources = [
      "video/create_video_capture_device_factory.cc",
+diff --git a/media/capture/video/create_video_capture_device_factory.cc b/media/capture/video/create_video_capture_device_factory.cc
+index ed8a138..30f0a61 100644
+--- a/media/capture/video/create_video_capture_device_factory.cc
++++ b/media/capture/video/create_video_capture_device_factory.cc
+@@ -24,6 +24,7 @@
+ #include "media/capture/video/chromeos/video_capture_device_factory_chromeos.h"
+ #include "media/capture/video/linux/video_capture_device_factory_linux.h"
+ #elif BUILDFLAG(IS_WIN)
++#include "base/win/windows_phone_8_1.h"
+ #include "media/capture/video/win/video_capture_device_factory_win.h"
+ #elif BUILDFLAG(IS_APPLE)
+ #include "media/capture/video/apple/video_capture_device_factory_apple.h"
+@@ -70,7 +71,7 @@ CreatePlatformSpecificVideoCaptureDeviceFactory(
+   if (base::SysInfo::IsRunningOnChromeOS())
+     return std::make_unique<VideoCaptureDeviceFactoryChromeOS>(ui_task_runner);
+   return std::make_unique<VideoCaptureDeviceFactoryLinux>(ui_task_runner);
+-#elif BUILDFLAG(IS_WIN)
++#elif BUILDFLAG(IS_WIN) && !BASE_WIN_IS_PHONE_8_1
+   return std::make_unique<VideoCaptureDeviceFactoryWin>();
+ #elif BUILDFLAG(IS_APPLE)
+ #if BUILDFLAG(IS_IOS_TVOS)
 diff --git a/media/capture/video/win/BUILD.gn b/media/capture/video/win/BUILD.gn
 index bbff1cb..12d5b70 100644
 --- a/media/capture/video/win/BUILD.gn
@@ -11010,10 +13285,18 @@ index f16c736..256a1f4 100644
  namespace media {
  
 diff --git a/media/midi/BUILD.gn b/media/midi/BUILD.gn
-index 5b4e60b..bfaeb66 100644
+index 5b4e60b..0697d64 100644
 --- a/media/midi/BUILD.gn
 +++ b/media/midi/BUILD.gn
-@@ -81,6 +81,7 @@ source_set("ump_helper") {
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/features.gni")
+ import("//build/config/ui.gni")
+ import("//media/media_options.gni")
+@@ -81,6 +82,7 @@ source_set("ump_helper") {
  }
  
  component("midi") {
@@ -11021,6 +13304,36 @@ index 5b4e60b..bfaeb66 100644
    sources = [
      "message_util.cc",
      "message_util.h",
+@@ -142,7 +144,12 @@ component("midi") {
+     }
+   }
+ 
+-  if (is_win) {
++  if (is_win && phone81_port) {
++    # Windows Phone 8.1 has no MIDI API: use the generic unsupported manager.
++    defines += [ "MIDI_NO_PLATFORM_MANAGER" ]
++  }
++
++  if (is_win && !phone81_port) {
+     deps += [ "//services/device/public/cpp/usb" ]
+     sources += [
+       "midi_manager_win.cc",
+diff --git a/media/midi/midi_manager.cc b/media/midi/midi_manager.cc
+index 442edb4..abe8e1b 100644
+--- a/media/midi/midi_manager.cc
++++ b/media/midi/midi_manager.cc
+@@ -86,8 +86,9 @@ MidiManager::~MidiManager() {
+   }
+ }
+ 
+-#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_WIN) && \
+-    !(defined(USE_ALSA) && defined(USE_UDEV)) && !BUILDFLAG(IS_ANDROID)
++#if (!BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_WIN) &&      \
++     !(defined(USE_ALSA) && defined(USE_UDEV)) && !BUILDFLAG(IS_ANDROID)) || \
++    defined(MIDI_NO_PLATFORM_MANAGER)
+ MidiManager* MidiManager::Create(MidiService* service) {
+   ReportUsage(Usage::CREATED_ON_UNSUPPORTED_PLATFORMS);
+   return new MidiManager(service);
 diff --git a/media/mojo/clients/BUILD.gn b/media/mojo/clients/BUILD.gn
 index b0ccf8e..a8d3b04 100644
 --- a/media/mojo/clients/BUILD.gn
@@ -14283,10 +16596,28 @@ index 0000000..14cba71
 +
 +}  // namespace sandbox
 diff --git a/services/device/BUILD.gn b/services/device/BUILD.gn
-index 8877fc0..fca96be 100644
+index 8877fc0..4aa7faa 100644
 --- a/services/device/BUILD.gn
 +++ b/services/device/BUILD.gn
-@@ -550,6 +550,7 @@ source_set("usb_test_gadget") {
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/features.gni")
+ import("//services/device/public/cpp/compute_pressure/buildflags.gni")
+ import("//services/device/public/cpp/geolocation/buildflags.gni")
+@@ -17,7 +18,8 @@ if (is_ios) {
+ }
+ 
+ is_serial_enabled_platform =
+-    is_win || ((is_linux || is_chromeos) && use_udev) || is_mac || is_android
++    (is_win && !phone81_port) || ((is_linux || is_chromeos) && use_udev) ||
++    is_mac || is_android
+ 
+ source_set("lib") {
+   # This should be visible only to embedders of the Device Service, and the
+@@ -550,6 +552,7 @@ source_set("usb_test_gadget") {
  }
  
  source_set("utility") {
@@ -14307,10 +16638,18 @@ index d583ebc..c2891f6 100644
        "//services/device:lib",
        "//services/device:tests",
 diff --git a/services/device/generic_sensor/BUILD.gn b/services/device/generic_sensor/BUILD.gn
-index 4368c3a..ed2ec02 100644
+index 4368c3a..f0018b9 100644
 --- a/services/device/generic_sensor/BUILD.gn
 +++ b/services/device/generic_sensor/BUILD.gn
-@@ -10,6 +10,7 @@ if (is_android) {
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/features.gni")
+ 
+ if (is_android) {
+@@ -10,6 +11,7 @@ if (is_android) {
  }
  
  source_set("generic_sensor") {
@@ -14318,6 +16657,33 @@ index 4368c3a..ed2ec02 100644
    visibility = [ "//services/device:*" ]
  
    output_name = "generic_sensor"
+@@ -113,7 +115,12 @@ source_set("generic_sensor") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && phone81_port) {
++    # No Windows Phone 8.1 sensor backend: the service reports no devices.
++    defines = [ "DEVICE_NO_PLATFORM_SENSORS" ]
++  }
++
++  if (is_win && !phone81_port) {
+     sources += [
+       "platform_sensor_provider_win.cc",
+       "platform_sensor_provider_win.h",
+diff --git a/services/device/generic_sensor/platform_sensor_provider.cc b/services/device/generic_sensor/platform_sensor_provider.cc
+index 4a7c4eb..a482e92 100644
+--- a/services/device/generic_sensor/platform_sensor_provider.cc
++++ b/services/device/generic_sensor/platform_sensor_provider.cc
+@@ -63,7 +63,7 @@ std::unique_ptr<PlatformSensorProvider> PlatformSensorProvider::Create() {
+   return std::make_unique<PlatformSensorProviderMac>();
+ #elif BUILDFLAG(IS_ANDROID)
+   return std::make_unique<PlatformSensorProviderAndroid>();
+-#elif BUILDFLAG(IS_WIN)
++#elif BUILDFLAG(IS_WIN) && !defined(DEVICE_NO_PLATFORM_SENSORS)
+   if (PlatformSensorProvider::UseWindowsWinrt()) {
+     return std::make_unique<PlatformSensorProviderWinrt>();
+   } else {
 diff --git a/services/device/geolocation/BUILD.gn b/services/device/geolocation/BUILD.gn
 index 728b970..3435c7b 100644
 --- a/services/device/geolocation/BUILD.gn
@@ -14349,10 +16715,18 @@ index 728b970..3435c7b 100644
        "wifi_data_provider_common_win.cc",
        "wifi_data_provider_common_win.h",
 diff --git a/services/device/hid/BUILD.gn b/services/device/hid/BUILD.gn
-index 1a016eb..c365b26 100644
+index 1a016eb..e12447a 100644
 --- a/services/device/hid/BUILD.gn
 +++ b/services/device/hid/BUILD.gn
-@@ -11,6 +11,7 @@ if (is_android) {
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/features.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ 
+@@ -11,6 +12,7 @@ if (is_android) {
  }
  
  source_set("hid") {
@@ -14360,6 +16734,33 @@ index 1a016eb..c365b26 100644
    sources = [
      "hid_collection.cc",
      "hid_collection.h",
+@@ -61,7 +63,12 @@ source_set("hid") {
+     deps += [ "//chromeos/dbus/permission_broker" ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && phone81_port) {
++    # No Windows Phone 8.1 HID backend: the service reports no devices.
++    defines = [ "DEVICE_NO_PLATFORM_HID" ]
++  }
++
++  if (is_win && !phone81_port) {
+     sources += [
+       "hid_connection_win.cc",
+       "hid_connection_win.h",
+diff --git a/services/device/hid/hid_service.cc b/services/device/hid/hid_service.cc
+index 7f37eed..91c9bc6 100644
+--- a/services/device/hid/hid_service.cc
++++ b/services/device/hid/hid_service.cc
+@@ -74,7 +74,7 @@ std::unique_ptr<HidService> HidService::Create() {
+   return std::make_unique<HidServiceLinux>();
+ #elif BUILDFLAG(IS_MAC)
+   return std::make_unique<HidServiceMac>();
+-#elif BUILDFLAG(IS_WIN)
++#elif BUILDFLAG(IS_WIN) && !defined(DEVICE_NO_PLATFORM_HID)
+   return std::make_unique<HidServiceWin>();
+ #elif BUILDFLAG(IS_FUCHSIA)
+   return std::make_unique<HidServiceFuchsia>();
 diff --git a/services/device/public/cpp/geolocation/BUILD.gn b/services/device/public/cpp/geolocation/BUILD.gn
 index 5a357d9..ca7be42 100644
 --- a/services/device/public/cpp/geolocation/BUILD.gn
@@ -14402,10 +16803,18 @@ index 04abe1e..a49fe77 100644
        ":test_support",
        "//services/device:lib",
 diff --git a/services/device/usb/BUILD.gn b/services/device/usb/BUILD.gn
-index 4e8a030..da111c0 100644
+index 4e8a030..1ebf2f8 100644
 --- a/services/device/usb/BUILD.gn
 +++ b/services/device/usb/BUILD.gn
-@@ -13,6 +13,8 @@ if (is_android) {
+@@ -2,6 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
++import("//build/config/win/phone81.gni")
+ import("//build/config/features.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+ 
+@@ -13,6 +14,8 @@ if (is_android) {
  }
  
  static_library("usb") {
@@ -14414,6 +16823,33 @@ index 4e8a030..da111c0 100644
    # Only targets under //services/device folder can depend on it.
    visibility = [
      ":*",
+@@ -67,7 +70,12 @@ static_library("usb") {
+     deps += [ ":jni_headers" ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && phone81_port) {
++    # No Windows Phone 8.1 WinUSB backend: the service reports no devices.
++    defines = [ "DEVICE_NO_PLATFORM_USB" ]
++  }
++
++  if (is_win && !phone81_port) {
+     sources += [
+       "scoped_winusb_handle.cc",
+       "scoped_winusb_handle.h",
+diff --git a/services/device/usb/usb_service.cc b/services/device/usb/usb_service.cc
+index cbe4b23..409545d 100644
+--- a/services/device/usb/usb_service.cc
++++ b/services/device/usb/usb_service.cc
+@@ -49,7 +49,7 @@ std::unique_ptr<UsbService> UsbService::Create() {
+   return base::WrapUnique(new UsbServiceAndroid());
+ #elif defined(USE_UDEV)
+   return base::WrapUnique(new UsbServiceLinux());
+-#elif BUILDFLAG(IS_WIN)
++#elif BUILDFLAG(IS_WIN) && !defined(DEVICE_NO_PLATFORM_USB)
+   return base::WrapUnique(new UsbServiceWin());
+ #elif BUILDFLAG(IS_MAC)
+   return base::WrapUnique(new UsbServiceImpl());
 diff --git a/services/device/wake_lock/power_save_blocker/BUILD.gn b/services/device/wake_lock/power_save_blocker/BUILD.gn
 index ce192d6..86a0229 100644
 --- a/services/device/wake_lock/power_save_blocker/BUILD.gn
@@ -14826,7 +17262,7 @@ index 91d8f4c..6bcce1a 100644
        "ep_device_info.cc",
        "ep_device_info.h",
 diff --git a/services/webnn/public/cpp/platform_functions_win.h b/services/webnn/public/cpp/platform_functions_win.h
-index 77769ef..3a9105c 100644
+index 77769ef..435fdaa 100644
 --- a/services/webnn/public/cpp/platform_functions_win.h
 +++ b/services/webnn/public/cpp/platform_functions_win.h
 @@ -9,6 +9,56 @@
@@ -14835,7 +17271,7 @@ index 77769ef..3a9105c 100644
  
 +#include "base/win/windows_phone_8_1.h"
 +
-+#if BASE_WIN_IS_PHONE_8_1
++#if BASE_WIN_IS_PHONE_8_1 && !defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
 +// The Phone 8.1 appmodel.h predates the Windows 11 dynamic dependency API.
 +// Only the types are needed here: the functions are resolved at run time and
 +// are absent on the phone, so every call reports failure.
@@ -15750,10 +18186,10 @@ index 41b4844..538e66a 100644
      "canvas_memory_dump_provider.cc",
      "canvas_memory_dump_provider.h",
 diff --git a/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc b/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
-index 5bc5226..e5c390c 100644
+index 5bc5226..bf26f45 100644
 --- a/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
 +++ b/third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.cc
-@@ -8,6 +8,7 @@
+@@ -8,13 +8,14 @@
  #include "base/strings/stringprintf.h"
  #include "base/trace_event/malloc_dump_provider.h"
  #include "base/trace_event/process_memory_dump.h"
@@ -15761,6 +18197,14 @@ index 5bc5226..e5c390c 100644
  #include "partition_alloc/partition_alloc.h"
  #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
  #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
+ namespace blink {
+ 
+-const char kPartitionAllocDumpName[] = "partition_alloc";
++[[maybe_unused]] const char kPartitionAllocDumpName[] = "partition_alloc";
+ 
+ PartitionAllocMemoryDumpProvider* PartitionAllocMemoryDumpProvider::Instance() {
+   DEFINE_STATIC_LOCAL(PartitionAllocMemoryDumpProvider, instance, ());
 @@ -24,6 +25,11 @@ PartitionAllocMemoryDumpProvider* PartitionAllocMemoryDumpProvider::Instance() {
  bool PartitionAllocMemoryDumpProvider::OnMemoryDump(
      const base::trace_event::MemoryDumpArgs& args,
@@ -15794,7 +18238,7 @@ index a3e888b..7e39ef9 100644
      "common/auto_advancing_virtual_time_domain.cc",
      "common/auto_advancing_virtual_time_domain.h",
 diff --git a/third_party/blink/renderer/platform/wtf/stack_util.cc b/third_party/blink/renderer/platform/wtf/stack_util.cc
-index 975302f..fa8bb8d 100644
+index 975302f..ddcb6b9 100644
 --- a/third_party/blink/renderer/platform/wtf/stack_util.cc
 +++ b/third_party/blink/renderer/platform/wtf/stack_util.cc
 @@ -18,6 +18,14 @@
@@ -15822,6 +18266,16 @@ index 975302f..fa8bb8d 100644
    ULONG_PTR low_limit, high_limit;
    ::GetCurrentThreadStackLimits(&low_limit, &high_limit);
    return reinterpret_cast<void*>(high_limit);
+@@ -241,7 +250,8 @@ bool IsOnStack(void* address) {
+ }
+ 
+ uintptr_t GetCurrentStackPosition() {
+-#if defined(COMPILER_MSVC)
++// clang-cl has no _AddressOfReturnAddress for 32-bit ARM (Windows Phone).
++#if defined(COMPILER_MSVC) && !(defined(__clang__) && defined(_M_ARM))
+   return reinterpret_cast<uintptr_t>(_AddressOfReturnAddress());
+ #else
+   return reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
 diff --git a/third_party/boringssl/BUILD.gn b/third_party/boringssl/BUILD.gn
 index f4e51bf..932b3aa 100644
 --- a/third_party/boringssl/BUILD.gn
@@ -15885,6 +18339,20 @@ index 30aac3f..6bdddba 100644
  }
  
  #else
+diff --git a/third_party/boringssl/src/crypto/thread_win.cc b/third_party/boringssl/src/crypto/thread_win.cc
+index d87c296..43993da 100644
+--- a/third_party/boringssl/src/crypto/thread_win.cc
++++ b/third_party/boringssl/src/crypto/thread_win.cc
+@@ -106,7 +106,8 @@ static void NTAPI thread_local_destructor(PVOID module, DWORD reason,
+ // Note, in the prefixed build, `p_thread_callback_boringssl` may be a macro.
+ #define STRINGIFY(x) #x
+ #define EXPAND_AND_STRINGIFY(x) STRINGIFY(x)
+-#ifdef _WIN64
++// ARM32 symbols carry no leading underscore either.
++#if defined(_WIN64) || defined(_M_ARM)
+ __pragma(comment(linker, "/INCLUDE:_tls_used")) __pragma(comment(
+     linker, "/INCLUDE:" EXPAND_AND_STRINGIFY(p_thread_callback_boringssl)))
+ #else
 diff --git a/third_party/boringssl/src/crypto/x509/by_dir.cc b/third_party/boringssl/src/crypto/x509/by_dir.cc
 index eeb7aa7..377d2c8 100644
 --- a/third_party/boringssl/src/crypto/x509/by_dir.cc
@@ -15919,6 +18387,39 @@ index 39de096..ebaa8f9 100644
      type = X509_FILETYPE_PEM;
    }
    if (X509_load_cert_crl_file(ctx, file, type) != 0) {
+diff --git a/third_party/cpuinfo/BUILD.gn b/third_party/cpuinfo/BUILD.gn
+index 1fd7f0f..9e835fd 100644
+--- a/third_party/cpuinfo/BUILD.gn
++++ b/third_party/cpuinfo/BUILD.gn
+@@ -248,6 +248,11 @@ source_set("cpu_and_os_specific") {
+     ]
+   }
+ 
++  if (is_win && current_cpu == "arm") {
++    # Windows Phone 8.1: no cpuinfo backend; see phone81/isa.c.
++    sources = [ "phone81/isa.c" ]
++  }
++
+   if ((is_mac || is_ios) && (current_cpu == "x86" || current_cpu == "x64")) {
+     sources = [ "src/src/x86/mach/init.c" ]
+   }
+diff --git a/third_party/cpuinfo/phone81/isa.c b/third_party/cpuinfo/phone81/isa.c
+new file mode 100644
+index 0000000..da69bb8
+--- /dev/null
++++ b/third_party/cpuinfo/phone81/isa.c
+@@ -0,0 +1,11 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// cpuinfo has no Windows ARM32 (Windows Phone 8.1) backend: initialization
++// reports the platform as unsupported, and the ARM feature set stays empty,
++// so callers such as ruy pick their portable code paths.
++
++#include <cpuinfo.h>
++
++struct cpuinfo_arm_isa cpuinfo_isa;
 diff --git a/third_party/cpuinfo/src/deps/clog/src/clog.c b/third_party/cpuinfo/src/deps/clog/src/clog.c
 index 27658f9..061e615 100644
 --- a/third_party/cpuinfo/src/deps/clog/src/clog.c
@@ -16437,6 +18938,15 @@ index 4dd58a4..2715837 100644
  #define DAWN_PLATFORM_IS_WINUWP 1
  #else
  #error "Unsupported Windows platform."
+diff --git a/third_party/depot_tools/.versions/.cipd_client.cipd_version b/third_party/depot_tools/.versions/.cipd_client.cipd_version
+index 5b8a914..b73003d 100644
+--- a/third_party/depot_tools/.versions/.cipd_client.cipd_version
++++ b/third_party/depot_tools/.versions/.cipd_client.cipd_version
+@@ -1 +1 @@
+-{"package_name":"infra/tools/cipd/linux-amd64","instance_id":"lCuaUknLFAJhrFwS5IUgSe-_UdgUAc6wczmcK0Ao9jAC"}
+\ No newline at end of file
++{"package_name":"infra/tools/cipd/mac-arm64","instance_id":"PDJn8PeT1PnwXIX9GsT7q8E-HutCU7XvOe2Y4EQQJNAC"}
+\ No newline at end of file
 diff --git a/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h b/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h
 index 60a107f..2d69e4a 100644
 --- a/third_party/eigen3/src/contrib/Eigen/src/Tensor/TensorIntDiv.h
@@ -23729,10 +26239,20 @@ index 2fe3ede..2fcf33c 100644
        "iterator_impl.cc",
        "iterator_impl.h",
 diff --git a/third_party/perfetto/src/tracing/platform_windows.cc b/third_party/perfetto/src/tracing/platform_windows.cc
-index d4ff310..abb4983 100644
+index d4ff310..b8d3c33 100644
 --- a/third_party/perfetto/src/tracing/platform_windows.cc
 +++ b/third_party/perfetto/src/tracing/platform_windows.cc
-@@ -105,6 +105,9 @@ std::unique_ptr<base::TaskRunner> PlatformWindows::CreateTaskRunner(
+@@ -31,7 +31,8 @@
+ // This magic is from chromium's base/threading/thread_local_storage_win.cc
+ // which in turn is from http://www.codeproject.com/threads/tls.asp.
+ 
+-#ifdef _WIN64
++// ARM32 symbols carry no leading underscore either.
++#if defined(_WIN64) || defined(_M_ARM)
+ #pragma comment(linker, "/INCLUDE:_tls_used")
+ #pragma comment(linker, "/INCLUDE:perfetto_thread_callback_base")
+ #else
+@@ -105,6 +106,9 @@ std::unique_ptr<base::TaskRunner> PlatformWindows::CreateTaskRunner(
  }
  
  std::string PlatformWindows::GetCurrentProcessName() {
@@ -23742,7 +26262,7 @@ index d4ff310..abb4983 100644
    char buf[MAX_PATH];
    auto len = ::GetModuleFileNameA(nullptr /*current*/, buf, sizeof(buf));
    std::string name(buf, static_cast<size_t>(len));
-@@ -112,6 +115,7 @@ std::string PlatformWindows::GetCurrentProcessName() {
+@@ -112,6 +116,7 @@ std::string PlatformWindows::GetCurrentProcessName() {
    if (sep != std::string::npos)
      name = name.substr(sep + 1);
    return name;
@@ -25299,10 +27819,18 @@ index f353476..7de9bb8 100644
    }
  
 diff --git a/ui/accessibility/platform/BUILD.gn b/ui/accessibility/platform/BUILD.gn
-index 7361f52..6e78b71 100644
+index 7361f52..75866e0 100644
 --- a/ui/accessibility/platform/BUILD.gn
 +++ b/ui/accessibility/platform/BUILD.gn
-@@ -27,6 +27,7 @@ if (is_android) {
+@@ -5,6 +5,7 @@
+ import("//build/config/features.gni")
+ import("//build/config/linux/pkg_config.gni")
+ import("//build/config/ui.gni")
++import("//build/config/win/phone81.gni")
+ import("//extensions/buildflags/buildflags.gni")
+ import("//mojo/public/tools/bindings/mojom.gni")
+ import("//testing/libfuzzer/fuzzer_test.gni")
+@@ -27,6 +28,7 @@ if (is_android) {
  }
  
  component("platform") {
@@ -25310,8 +27838,97 @@ index 7361f52..6e78b71 100644
    output_name = "accessibility_platform"
  
    defines = [ "IS_AX_PLATFORM_IMPL" ]
+@@ -237,6 +239,10 @@ component("platform") {
+         "uia_registrar_win.cc",
+         "uia_registrar_win.h",
+       ]
++      if (phone81_port) {
++        sources -= [ "uia_client_info_source_win.cc" ]
++        sources += [ "uia_client_info_source_phone.cc" ]
++      }
+ 
+       public_deps += [
+         "//third_party/iaccessible2",
+diff --git a/ui/accessibility/platform/uia_client_info_source_phone.cc b/ui/accessibility/platform/uia_client_info_source_phone.cc
+new file mode 100644
+index 0000000..07e6e01
+--- /dev/null
++++ b/ui/accessibility/platform/uia_client_info_source_phone.cc
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Windows Phone 8.1 has no UI Automation client information service (and the
++// Windows SDK used for this port predates its declarations): no UIA client
++// can be observed, so the source is never created.
++
++#include <unknwn.h>
++
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/notreached.h"
++#include "ui/accessibility/platform/uia_client_info_source_win.h"
++
++// Only needed so that ComPtr can be instantiated; no instance ever exists.
++struct IUIAutomationClientInfoSource : public IUnknown {};
++
++namespace ui {
++
++UiaClientInfoSource::~UiaClientInfoSource() = default;
++
++// static
++std::optional<UiaClientInfoSource> UiaClientInfoSource::Create(
++    ConnectionCallback callback) {
++  return std::nullopt;
++}
++
++// static
++std::optional<UiaClientInfoSource> UiaClientInfoSource::CreateForTesting(
++    Microsoft::WRL::ComPtr<IUIAutomationClientInfoSource> client_info_source,
++    ConnectionCallback callback) {
++  return std::nullopt;
++}
++
++UiaClientInfoSource::UiaClientInfoSource(UiaClientInfoSource&& other) noexcept
++    : client_info_source_(std::move(other.client_info_source_)),
++      callback_cookie_(std::exchange(other.callback_cookie_, std::nullopt)) {}
++
++UiaClientInfoSource& UiaClientInfoSource::operator=(
++    UiaClientInfoSource&& other) {
++  client_info_source_ = std::move(other.client_info_source_);
++  callback_cookie_ = std::exchange(other.callback_cookie_, std::nullopt);
++  return *this;
++}
++
++std::vector<std::string> UiaClientInfoSource::GetConnectedClientProcessNames() {
++  return {};
++}
++
++UiaClientInfoSource::UiaClientInfoSource(
++    Microsoft::WRL::ComPtr<IUIAutomationClientInfoSource> client_info_source,
++    std::optional<uint64_t> callback_cookie)
++    : client_info_source_(std::move(client_info_source)),
++      callback_cookie_(callback_cookie) {}
++
++// static
++std::optional<UiaClientInfoSource>
++UiaClientInfoSource::CreateFromClientInfoSource(
++    Microsoft::WRL::ComPtr<IUIAutomationClientInfoSource> client_info_source,
++    ConnectionCallback callback) {
++  return std::nullopt;
++}
++
++HRESULT UiaClientInfoSource::UnregisterConnectionCallback() {
++  return S_OK;
++}
++
++}  // namespace ui
 diff --git a/ui/aura/BUILD.gn b/ui/aura/BUILD.gn
-index 31fcf90..f41313c 100644
+index 31fcf90..26075a1 100644
 --- a/ui/aura/BUILD.gn
 +++ b/ui/aura/BUILD.gn
 @@ -6,6 +6,7 @@ import("//build/config/ui.gni")
@@ -25322,6 +27939,14 @@ index 31fcf90..f41313c 100644
    public = [
      "client/aura_constants.h",
      "client/capture_client.h",
+@@ -178,6 +179,7 @@ component("aura") {
+ }
+ 
+ static_library("test_support") {
++  configs += [ "//build/config/win:phone81_desktop_declarations" ]
+   testonly = true
+   sources = [
+     "test/aura_test_base.cc",
 diff --git a/ui/base/BUILD.gn b/ui/base/BUILD.gn
 index d49ede6..aaaabbf 100644
 --- a/ui/base/BUILD.gn
@@ -26887,6 +29512,25 @@ index a24f7f2..b116ec6 100644
    all_dependent_configs = [ ":flags" ]
  
    public = [
+diff --git a/ui/views/win/hwnd_message_handler.cc b/ui/views/win/hwnd_message_handler.cc
+index 4a5681b..55b551b 100644
+--- a/ui/views/win/hwnd_message_handler.cc
++++ b/ui/views/win/hwnd_message_handler.cc
+@@ -87,6 +87,14 @@
+ #include "ui/views/win/pen_event_handler_util.h"
+ #include "ui/views/win/scoped_fullscreen_visibility.h"
+ 
++#if defined(CHROMIUM_PHONE81_DESKTOP_DECLARATIONS)
++// IsWindowArranged postdates the Windows SDK used by the Windows Phone 8.1
++// port, which has no desktop window arrangement (snap layouts).
++static BOOL IsWindowArranged(HWND) {
++  return FALSE;
++}
++#endif
++
+ namespace views {
+ namespace {
+ 
 diff --git a/ui/wm/BUILD.gn b/ui/wm/BUILD.gn
 index 2815512..3fcb454 100644
 --- a/ui/wm/BUILD.gn
@@ -27066,6 +29710,54 @@ index 091e894..b1c728a 100644
        visibility = [ ":*" ]  # Only targets in this file can depend on this.
  
        sources = [
+diff --git a/v8/include/cppgc/common.h b/v8/include/cppgc/common.h
+index 2bfaf2f..540ac35 100644
+--- a/v8/include/cppgc/common.h
++++ b/v8/include/cppgc/common.h
+@@ -8,7 +8,8 @@
+ #include "cppgc/macros.h"
+ #include "v8config.h"  // NOLINT(build/include_directory)
+ 
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+ #include <intrin.h>  // _AddressOfReturnAddress()
+ #endif
+ 
+@@ -37,7 +38,8 @@ class V8_EXPORT V8_NODISCARD StackStartScope final {
+   CPPGC_STACK_ALLOCATED();
+ 
+  public:
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+   explicit StackStartScope(void* stack_start = _AddressOfReturnAddress());
+ #else
+   explicit StackStartScope(void* stack_start = __builtin_frame_address(0));
+diff --git a/v8/include/cppgc/heap.h b/v8/include/cppgc/heap.h
+index a8e1b5c..1349cfd 100644
+--- a/v8/include/cppgc/heap.h
++++ b/v8/include/cppgc/heap.h
+@@ -16,7 +16,8 @@
+ #include "v8config.h"  // NOLINT(build/include_directory)
+ 
+ // TODO(540324230): Remove once embedders migrate to StackStartScope.
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+ #include <intrin.h>  // _AddressOfReturnAddress()
+ #endif
+ 
+@@ -43,7 +44,8 @@ class Heap;
+  */
+ class V8_EXPORT StackStartMarker {
+  public:
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+   StackStartMarker() : stack_start_(_AddressOfReturnAddress()) {}
+ #else
+   StackStartMarker() : stack_start_(__builtin_frame_address(0)) {}
 diff --git a/v8/src/base/cpu/cpu-arm.cc b/v8/src/base/cpu/cpu-arm.cc
 index 4a29ee6..e3237c4 100644
 --- a/v8/src/base/cpu/cpu-arm.cc
@@ -27131,7 +29823,7 @@ index 9c25a7d..ed7d509 100644
  
  #define TRAP_SEQUENCE1_() asm volatile("int3")
 diff --git a/v8/src/base/platform/platform-win32.cc b/v8/src/base/platform/platform-win32.cc
-index 47c60a4..6ec6215 100644
+index 47c60a4..90001bf 100644
 --- a/v8/src/base/platform/platform-win32.cc
 +++ b/v8/src/base/platform/platform-win32.cc
 @@ -19,7 +19,17 @@
@@ -27270,6 +29962,30 @@ index 47c60a4..6ec6215 100644
  #if defined(V8_OS_WIN)
  void EnsureConsoleOutputWin32() {
    UINT new_flags =
+@@ -1932,7 +1972,8 @@ void Stack::SetCurrentThreadStackBounds(uintptr_t limit, uintptr_t base) {
+ 
+ // static
+ Stack::StackSlot Stack::GetCurrentStackPosition() {
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress intrinsic for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+   return _AddressOfReturnAddress();
+ #else
+   return __builtin_frame_address(0);
+diff --git a/v8/src/base/platform/platform.h b/v8/src/base/platform/platform.h
+index 7256bb1..8ebd637 100644
+--- a/v8/src/base/platform/platform.h
++++ b/v8/src/base/platform/platform.h
+@@ -723,7 +723,8 @@ class V8_BASE_EXPORT Stack {
+   // return an address significantly above the actual current stack position.
+   static V8_NOINLINE StackSlot GetCurrentStackPosition();
+ 
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress intrinsic for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+ #define DEFAULT_CURRENT_FRAME_ADDRESS _AddressOfReturnAddress()
+ #else
+ #define DEFAULT_CURRENT_FRAME_ADDRESS __builtin_frame_address(0)
 diff --git a/v8/src/base/platform/semaphore.cc b/v8/src/base/platform/semaphore.cc
 index 2ac431d..07141ee 100644
 --- a/v8/src/base/platform/semaphore.cc
@@ -27687,6 +30403,20 @@ index 08adc77..ac42aa9 100644
  #undef V8_ASSEMBLER_IS_MASM
  #undef V8_ASSEMBLER_IS_MARMASM
  #undef V8_COMPILER_IS_MSVC
+diff --git a/v8/src/utils/utils.cc b/v8/src/utils/utils.cc
+index ed3ad33..124bd61 100644
+--- a/v8/src/utils/utils.cc
++++ b/v8/src/utils/utils.cc
+@@ -214,7 +214,8 @@ bool DoubleToBoolean(double d) {
+ }
+ 
+ uintptr_t GetCurrentStackPosition() {
+-#if V8_CC_MSVC
++// clang-cl has no _AddressOfReturnAddress intrinsic for 32-bit ARM.
++#if V8_CC_MSVC && !(defined(__clang__) && defined(_M_ARM))
+   return reinterpret_cast<uintptr_t>(_AddressOfReturnAddress());
+ #else
+   return reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
 diff --git a/v8/tools/wp81_host_launcher.py b/v8/tools/wp81_host_launcher.py
 new file mode 100644
 index 0000000..b0e5b01
